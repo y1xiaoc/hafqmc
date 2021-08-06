@@ -1,5 +1,5 @@
 import numpy as np
-from pauxy_script import chunked_cholesky
+from .pauxy_script import chunked_cholesky
 
 
 def rotate_wfn(coeff, X, thld=1e-12):
@@ -42,6 +42,8 @@ def get_orth_ao(mf, method=None):
     if isinstance(method, np.ndarray):
         X = method
     elif method is None:
+        if mf.mo_coeff is None:
+            mf.run()
         X = mf.mo_coeff
     else:
         X = lo.orth_ao(mf, method)
@@ -50,12 +52,13 @@ def get_orth_ao(mf, method=None):
     return X
 
 
-def integrals_from_scf(mf, use_chol=False, chol_cut=1e-5, orth_ao=None):
+def integrals_from_scf(mf, use_mcd=False, chol_cut=1e-5, orth_ao=None):
     mol = mf.mol
     enuc = mf.energy_nuc()
     h1e = mf.get_hcore()
-    if use_chol:
+    if use_mcd:
         eri = chunked_cholesky(mol, max_error=chol_cut)
+        eri = eri.reshape(eri.shape[0], mol.nao, mol.nao)
     else:
         eri = mf._eri if mf._eri is not None else mf.mol
     X = get_orth_ao(mf, orth_ao)
@@ -64,6 +67,8 @@ def integrals_from_scf(mf, use_chol=False, chol_cut=1e-5, orth_ao=None):
 
 
 def initwfn_from_scf(mf, orth_ao=None):
+    if mf.mo_coeff is None:
+        mf.run()
     X = get_orth_ao(mf, orth_ao)
     if mf.mo_coeff.ndim == 3:
         mo_a = mf.mo_coeff[0, :, mf.mo_occ[0] > 0]

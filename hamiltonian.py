@@ -1,10 +1,65 @@
 import jax
-import numpy as np
+from jax.config import config
+config.update("jax_enable_x64", True)
 from jax import numpy as jnp
-from jax import scipy as jsp
-from jax import lax
+
+from .utils import integrals_from_scf
+
+@jax.tree_util.register_pytree_node_class
+class Hamiltonian(object):
+    use_mcd = False
+
+    def __init__(self, h1e, eri, enuc=0.):
+        self.h1e = jnp.asarray(h1e)
+        self.eri = jnp.asarray(eri)
+        self.enuc = enuc
+
+    def calc_e1b(self, rdm):
+        return calc_e1b(self.h1e, rdm)
+    
+    def calc_e2b(self, rdm):
+        return calc_e2b(self.eri, rdm)
+    
+    def local_energy(self, bra, ket):
+        """the normalized energy from two slater determinants"""
+        rdm = calc_rdm(bra, ket)
+        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
+
+    def energy_ovlp(self, bra, ket):
+        """the (unnormalized) energy and overlap from two determinants"""
+        raw_ene = self.local_energy(bra, ket)
+        ovlp = calc_ovlp(bra, ket)
+        return raw_ene * ovlp, ovlp
+    
+    @classmethod
+    def from_pyscf(cls, mol_or_mf, **kwargs):
+        if not hasattr(mol_or_mf, "mo_coeff"):
+            mf = mol_or_mf.HF()
+        else:
+            mf = mol_or_mf
+        return cls(*integrals_from_scf(mf, use_mcd=cls.use_mcd, **kwargs))
+    
+    def tree_flatten(self):
+        children = (self.h1e, self.eri, self.enuc)
+        aux_data = ("h1e", "eri", "enuc")
+        return (children, aux_data)
+    
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = object.__new__(cls)
+        for name, data in zip(aux_data, children):
+            setattr(obj, name, data)
+        return obj
 
 
+@jax.tree_util.register_pytree_node_class
+class HamiltonianMCD(Hamiltonian):
+    use_mcd = True
+
+    def calc_e2b(self, rdm):
+        return calc_e2b_chol(self.eri, rdm)
+
+    
 def calc_ovlp_ns(V, U):
     r"""
     Overlap of two (non-orthogonal) Slater determinants V and U, no spin index
@@ -47,6 +102,8 @@ def calc_ovlp(V, U):
     ovlp : flpat
         overlap of the two Slater determinants
     """
+    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+        return calc_ovlp_ns(V, U)
     Va, Vb = V
     Ua, Ub = U
     return calc_ovlp_ns(Va, Ua) * calc_ovlp_ns(Vb, Ub)
@@ -109,6 +166,8 @@ def calc_rdm(V, U):
     rdm : array
         spin up and spin down one-particle reduced density matrix in computing basis
     """
+    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+        return calc_rdm_ns(V, U)
     Va, Vb = V
     Ua, Ub = U
     return jnp.stack((calc_rdm_ns(Va, Ua), calc_rdm_ns(Vb, Ub)), 0)
