@@ -5,20 +5,26 @@ from jax import numpy as jnp
 
 from .utils import integrals_from_scf
 
+ERI_MAX_MEMORY = 8.
+
+
 @jax.tree_util.register_pytree_node_class
 class Hamiltonian(object):
-    use_mcd = False
 
-    def __init__(self, h1e, eri, enuc=0.):
+    def __init__(self, h1e, ceri, enuc=0.):
         self.h1e = jnp.asarray(h1e)
-        self.eri = jnp.asarray(eri)
+        self.ceri = jnp.asarray(ceri)
+        if ceri.shape[-1]**4 * 8 / 1024**3 <= ERI_MAX_MEMORY:
+            self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri)
+        else:
+            self._eri = ceri
         self.enuc = enuc
 
     def calc_e1b(self, rdm):
         return calc_e1b(self.h1e, rdm)
     
     def calc_e2b(self, rdm):
-        return calc_e2b(self.eri, rdm)
+        return calc_e2b(self._eri, rdm)
     
     def local_energy(self, bra, ket):
         """the normalized energy from two slater determinants"""
@@ -26,23 +32,43 @@ class Hamiltonian(object):
         return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
 
     def energy_ovlp(self, bra, ket):
-        """the (unnormalized) energy and overlap from two determinants"""
+        """the (unnormalized) energy and overlap from two SD"""
         raw_ene = self.local_energy(bra, ket)
         ovlp = calc_ovlp(bra, ket)
         return raw_ene * ovlp, ovlp
-    
+
+    def energy_slov(self, bra, ket):
+        """the (unnormalized) energy, with sign and log of overlap from two SD"""
+        raw_ene = self.local_energy(bra, ket)
+        sign, logov = calc_slov(bra, ket)
+        return raw_ene * sign * jnp.exp(logov), sign, logov
+
+    # @jax.jit
+    def make_proj_op(self, trial):
+        """generate the modified hmf, vhs and enuc for projection"""
+        hmf_raw = self.h1e - 0.5 * calc_v0(self._eri)
+        vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
+        rdm_t = calc_rdm(trial, trial)
+        if rdm_t.ndim == 3: rdm_t = rdm_t.sum(0)
+        vbar = jnp.einsum("kpq,pq->k", vhs_raw, rdm_t)
+        enuc = self.enuc - 0.5 * (vbar**2).sum()
+        hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
+        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1])
+        return hmf, vhs, enuc
+
     @classmethod
-    def from_pyscf(cls, mol_or_mf, **kwargs):
+    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None):
         if not hasattr(mol_or_mf, "mo_coeff"):
             mf = mol_or_mf.HF()
         else:
             mf = mol_or_mf
-        return cls(*integrals_from_scf(mf, use_mcd=cls.use_mcd, **kwargs))
+        return cls(*integrals_from_scf(mf, 
+            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao))
     
     def tree_flatten(self):
-        children = (self.h1e, self.eri, self.enuc)
-        aux_data = ("h1e", "eri", "enuc")
-        return (children, aux_data)
+        fields = ("h1e", "ceri", "enuc", "_eri")
+        children = tuple(getattr(self, f) for f in fields)
+        return (children, fields)
     
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -51,44 +77,16 @@ class Hamiltonian(object):
             setattr(obj, name, data)
         return obj
 
-
-@jax.tree_util.register_pytree_node_class
-class HamiltonianMCD(Hamiltonian):
-    use_mcd = True
-
-    def calc_e2b(self, rdm):
-        return calc_e2b_chol(self.eri, rdm)
-
     
 def calc_ovlp_ns(V, U):
     r"""
     Overlap of two (non-orthogonal) Slater determinants V and U, no spin index
-
-    .. math::
-        \langle \phi_V | \phi_U \rangle =
-        \mathrm{det} \left( V^{\dagger} U \right)
-
-    Parameters
-    ----------
-    V, U : array
-        matrix representation of the bra(V) and ket(U) in calculate the RDM, 
-        with row index (-2) for basis and column index (-1) for electrons. 
-
-    Returns
-    -------
-    ovlp : flpat
-        overlap of the two Slater determinants
     """
     return jnp.linalg.det( V.conj().T @ U )
-
 
 def calc_ovlp(V, U):
     r"""
     Overlap of two (non-orthogonal) Slater determinants V and U with spin components
-
-    .. math::
-        \langle \phi_V | \phi_U \rangle =
-        \mathrm{det} \left( V^{\dagger} U \right)
 
     Parameters
     ----------
@@ -99,7 +97,7 @@ def calc_ovlp(V, U):
 
     Returns
     -------
-    ovlp : flpat
+    ovlp : float
         overlap of the two Slater determinants
     """
     if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
@@ -109,50 +107,58 @@ def calc_ovlp(V, U):
     return calc_ovlp_ns(Va, Ua) * calc_ovlp_ns(Vb, Ub)
 
 
-def calc_rdm_ns(V, U):
+def calc_slov_ns(V, U):
     r"""
-    One-particle reduced density matrix. No spin index.
-    
-    Calculate the one particle RDM from two (non-orthogonal) Slater determinants (V for bra and U for ket). 
-    Use the following formula:
-    
-    .. math::
-        \langle \phi_V | c_i^{\dagger} c_j | \phi_U \rangle =
-        [U (V^{\dagger}U)^{-1} V^{\dagger}]_{ji}
-        
-    where :math:`U` stands for the matrix representation of Slater determinant :math:`|\psi_U\rangle`.
-    
-    
+    Sign and log of overlap of two SD V and U, no spin index
+    """
+    return jnp.linalg.slogdet( V.conj().T @ U )
+
+def calc_slov(V, U):
+    r"""
+    Sign and log of overlap of two SD V and U with spin components
+
     Parameters
     ----------
     V, U : array
         matrix representation of the bra(V) and ket(U) in calculate the RDM, 
         with row index (-2) for basis and column index (-1) for electrons. 
-        
+
     Returns
     -------
-    rdm : array
-        one-particle reduced density matrix in computing basis
+    sign : float
+        sign of the overlap of two SD
+    logdet : float
+        log of the absolute value of the overlap
+    """
+    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+        return calc_slov_ns(V, U)
+    Va, Vb = V
+    Ua, Ub = U
+    sa, la = calc_slov_ns(Va, Ua)
+    sb, lb = calc_slov_ns(Vb, Ub)
+    return sa * sb, la + lb
+
+
+def calc_rdm_ns(V, U):
+    r"""
+    One-particle reduced density matrix. No spin index.
     """
     V_h = V.conj().T
     inv_O = jnp.linalg.inv(V_h @ U)
     rdm = U @ inv_O @ V_h
     return rdm.T
 
-
 def calc_rdm(V, U):
     r"""
     One-particle reduced density matrix, with both spin components in a tuple
     
     Calculate the one particle RDM from two (non-orthogonal) Slater determinants (V for bra and U for ket) for each spin components.
-    Use the following formula:
     
     .. math::
         \langle \phi_V | c_i^{\dagger} c_j | \phi_U \rangle =
         [U (V^{\dagger}U)^{-1} V^{\dagger}]_{ji}
         
-    where :math:`U` stands for the matrix representation of Slater determinant :math:`|\psi_U\rangle`.
-    
+    :math:`U` stands for the matrix representation of Slater determinant :math:`|\psi_U\rangle`.
     
     Parameters
     ----------
@@ -174,12 +180,19 @@ def calc_rdm(V, U):
 
 
 def calc_e1b(h1e, rdm):
-    if rdm.ndim == 3:
-        rdm = rdm.sum(0)
-    return jnp.einsum("ij,ij", h1e, rdm)
+    # jnp.einsum("ij,ij", h1e, rdm)
+    return (h1e * rdm).sum()
 
 
 def calc_e2b(eri, rdm):
+    if eri.ndim == 4:
+        return calc_e2b_dense(eri, rdm)
+    elif eri.ndim == 3:
+        return calc_e2b_chol(eri, rdm)
+    else:
+        raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
+
+def calc_e2b_dense(eri, rdm):
     if rdm.ndim == 3:
         ga, gb = rdm
     else:
@@ -189,7 +202,6 @@ def calc_e2b(eri, rdm):
     ek = 0.5 * (jnp.einsum("prqs,ps,qr", eri, ga, ga) 
               + jnp.einsum("prqs,ps,qr", eri, gb, gb))
     return ej - ek
-
 
 def calc_e2b_chol(ceri, rdm):
     if rdm.ndim == 3:
@@ -207,3 +219,18 @@ def calc_e2b_chol(ceri, rdm):
     ek = 0.5 * (jnp.einsum("krs,ksr", chol_ka, chol_ka) 
               + jnp.einsum("krs,ksr", chol_kb, chol_kb))
     return ej - ek
+
+
+def calc_v0(eri):
+    if eri.ndim == 4:
+        return calc_v0_dense(eri)
+    elif eri.ndim == 3:
+        return calc_v0_chol(eri)
+    else:
+        raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
+
+def calc_v0_dense(eri):
+    return jnp.einsum("prrs->ps", eri)
+
+def calc_v0_chol(ceri):
+    return jnp.einsum("kpr,krs->ps", ceri, ceri)

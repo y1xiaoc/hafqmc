@@ -52,7 +52,7 @@ def get_orth_ao(mf, method=None):
     return X
 
 
-def integrals_from_scf(mf, use_mcd=False, chol_cut=1e-5, orth_ao=None):
+def integrals_from_scf(mf, use_mcd=False, chol_cut=1e-6, orth_ao=None):
     mol = mf.mol
     enuc = mf.energy_nuc()
     h1e = mf.get_hcore()
