@@ -1,81 +1,9 @@
 import jax
-from jax.config import config
-config.update("jax_enable_x64", True)
 from jax import numpy as jnp
 
-from .utils import integrals_from_scf
+from .mol_tools import integrals_from_scf
 
 ERI_MAX_MEMORY = 8.
-
-
-@jax.tree_util.register_pytree_node_class
-class Hamiltonian(object):
-
-    def __init__(self, h1e, ceri, enuc=0.):
-        self.h1e = jnp.asarray(h1e)
-        self.ceri = jnp.asarray(ceri)
-        if ceri.shape[-1]**4 * 8 / 1024**3 <= ERI_MAX_MEMORY:
-            self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri)
-        else:
-            self._eri = ceri
-        self.enuc = enuc
-
-    def calc_e1b(self, rdm):
-        return calc_e1b(self.h1e, rdm)
-    
-    def calc_e2b(self, rdm):
-        return calc_e2b(self._eri, rdm)
-    
-    def local_energy(self, bra, ket):
-        """the normalized energy from two slater determinants"""
-        rdm = calc_rdm(bra, ket)
-        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
-
-    def energy_ovlp(self, bra, ket):
-        """the (unnormalized) energy and overlap from two SD"""
-        raw_ene = self.local_energy(bra, ket)
-        ovlp = calc_ovlp(bra, ket)
-        return raw_ene * ovlp, ovlp
-
-    def energy_slov(self, bra, ket):
-        """the (unnormalized) energy, with sign and log of overlap from two SD"""
-        raw_ene = self.local_energy(bra, ket)
-        sign, logov = calc_slov(bra, ket)
-        return raw_ene * sign * jnp.exp(logov), sign, logov
-
-    # @jax.jit
-    def make_proj_op(self, trial):
-        """generate the modified hmf, vhs and enuc for projection"""
-        hmf_raw = self.h1e - 0.5 * calc_v0(self._eri)
-        vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
-        rdm_t = calc_rdm(trial, trial)
-        if rdm_t.ndim == 3: rdm_t = rdm_t.sum(0)
-        vbar = jnp.einsum("kpq,pq->k", vhs_raw, rdm_t)
-        enuc = self.enuc - 0.5 * (vbar**2).sum()
-        hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
-        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1])
-        return hmf, vhs, enuc
-
-    @classmethod
-    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None):
-        if not hasattr(mol_or_mf, "mo_coeff"):
-            mf = mol_or_mf.HF()
-        else:
-            mf = mol_or_mf
-        return cls(*integrals_from_scf(mf, 
-            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao))
-    
-    def tree_flatten(self):
-        fields = ("h1e", "ceri", "enuc", "_eri")
-        children = tuple(getattr(self, f) for f in fields)
-        return (children, fields)
-    
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        for name, data in zip(aux_data, children):
-            setattr(obj, name, data)
-        return obj
 
     
 def calc_ovlp_ns(V, U):
@@ -234,3 +162,65 @@ def calc_v0_dense(eri):
 
 def calc_v0_chol(ceri):
     return jnp.einsum("kpr,krs->ps", ceri, ceri)
+
+
+@jax.tree_util.register_pytree_node_class
+class Hamiltonian(object):
+
+    def __init__(self, h1e, ceri, enuc=0.):
+        self.h1e = jnp.asarray(h1e)
+        self.ceri = jnp.asarray(ceri)
+        if ceri.shape[-1]**4 * 8 / 1024**3 <= ERI_MAX_MEMORY:
+            self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri)
+        else:
+            self._eri = ceri
+        self.enuc = enuc
+
+    def calc_e1b(self, rdm):
+        return calc_e1b(self.h1e, rdm)
+    
+    def calc_e2b(self, rdm):
+        return calc_e2b(self._eri, rdm)
+
+    calc_ovlp = staticmethod(calc_ovlp)
+    calc_slov = staticmethod(calc_slov)
+    calc_rdm  = staticmethod(calc_rdm)
+
+    def local_energy(self, bra, ket):
+        """the normalized energy from two slater determinants"""
+        rdm = calc_rdm(bra, ket)
+        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
+
+    # @jax.jit
+    def make_proj_op(self, trial):
+        """generate the modified hmf, vhs and enuc for projection"""
+        hmf_raw = self.h1e - 0.5 * calc_v0(self._eri)
+        vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
+        rdm_t = calc_rdm(trial, trial)
+        if rdm_t.ndim == 3: rdm_t = rdm_t.sum(0)
+        vbar = jnp.einsum("kpq,pq->k", vhs_raw, rdm_t)
+        enuc = self.enuc - 0.5 * (vbar**2).sum()
+        hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
+        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1])
+        return hmf, vhs, enuc
+
+    @classmethod
+    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None):
+        if not hasattr(mol_or_mf, "mo_coeff"):
+            mf = mol_or_mf.HF()
+        else:
+            mf = mol_or_mf
+        return cls(*integrals_from_scf(mf, 
+            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao))
+    
+    def tree_flatten(self):
+        fields = ("h1e", "ceri", "enuc", "_eri")
+        children = tuple(getattr(self, f) for f in fields)
+        return (children, fields)
+    
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = object.__new__(cls)
+        for name, data in zip(aux_data, children):
+            setattr(obj, name, data)
+        return obj
