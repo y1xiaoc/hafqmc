@@ -11,7 +11,6 @@ _t_cplx = jnp.complex128
 
 _EXPMA_S = 2
 _EXPMA_M = 10
-@jax.jit
 def expm_apply(A, B):
     n = A.shape[-1]
     mu = jnp.trace(A, axis1=-1, axis2=-2) / n
@@ -34,11 +33,38 @@ def make_hermite(A):
     return 0.5 * (A.conj().T + A)
 
 
+def pack_spin(wfn):
+    if not (isinstance(wfn, (tuple, list)) or wfn.ndim >= 3):
+        return wfn, wfn.shape[-1]
+    w_up, w_dn = wfn
+    n_up, n_dn = w_up.shape[-1], w_dn.shape[-1]
+    w_packed = jnp.concatenate((w_up, w_dn), -1)
+    return w_packed, (n_up, n_dn)
+
+def unpack_spin(wfn, nelec):
+    if isinstance(nelec, int):
+        return wfn
+    n_up, n_dn = nelec
+    w_up = wfn[:, :n_up]
+    w_dn = wfn[:, n_up : n_up+n_dn]
+    return (w_up, w_dn)
+
+
 def parse_activation(name, **kwargs):
     if not isinstance(name, str):
         return name
     raw_fn = getattr(nn, name)
     return partial(raw_fn, **kwargs)
+
+def parse_bool(keys, inputs):
+    res_dict = {}
+    if isinstance(inputs, bool):
+        for key in keys:
+            res_dict[key] = inputs
+    else:
+        for key in keys:
+            res_dict[key] = key in inputs
+    return res_dict
 
 
 class Sequential(nn.Module):

@@ -36,7 +36,7 @@ class AuxField(nn.Module):
         self.nhs = self.init_vhs.shape[0]
 
     def __call__(self, fields):
-        vhs_sum = jnp.einsum("k,kpq->pq", fields[:self.nhs], self.vhs)
+        vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
         log_weight = - (fields.conj() @ fields)
         return make_hermite(vhs_sum), log_weight
 
@@ -68,6 +68,6 @@ class AuxFieldNet(AuxField):
             tmp = self.network(tmp)
         tmp = self.last_dense(tmp)
         fields = fields[:self.nhs] + tmp[:-1]
-        vhs_sum = jnp.einsum("k,kpq->pq", fields, self.vhs)
+        vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
         log_weight = - (fields.conj() @ fields) - tmp[-1]
         return make_hermite(vhs_sum), log_weight
