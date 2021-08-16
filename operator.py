@@ -5,7 +5,7 @@ from typing import Optional, Sequence
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, make_hermite, Sequential
+from .utils import fix_init, make_hermite, Serial
 
 
 class OneBody(nn.Module):
@@ -37,7 +37,7 @@ class AuxField(nn.Module):
 
     def __call__(self, fields):
         vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
-        log_weight = - (fields.conj() @ fields)
+        log_weight = - 0.5 * (fields.conj() @ fields)
         return make_hermite(vhs_sum), log_weight
 
 
@@ -51,7 +51,7 @@ class AuxFieldNet(AuxField):
         self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, 
             kernel_init=partial(nn.zeros, dtype=self.dtype))
         if self.hidden_sizes:
-            self.network = Sequential(
+            self.network = Serial(
                 [nn.Dense(
                     ls if ls and ls > 0 else nhs, 
                     dtype = _t_real,
@@ -69,5 +69,5 @@ class AuxFieldNet(AuxField):
         tmp = self.last_dense(tmp)
         fields = fields[:self.nhs] + tmp[:-1]
         vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
-        log_weight = - (fields.conj() @ fields) - tmp[-1]
+        log_weight = - 0.5 * (fields.conj() @ fields) - tmp[-1]
         return make_hermite(vhs_sum), log_weight

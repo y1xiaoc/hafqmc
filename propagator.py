@@ -22,6 +22,15 @@ class Propagator(nn.Module):
     auxfieldnet : Union[None, Sequence[int], dict] = None
     use_complex : bool = False
 
+    @classmethod
+    def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
+               max_nhs=None, parametrize=True, timevarying=False, auxfieldnet=None, use_complex=False):
+        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
+        if max_nhs is not None:
+            init_vhs = init_vhs[:max_nhs]
+        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, 
+                   parametrize, timevarying, auxfieldnet, use_complex)
+
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
         _dtype = _t_cplx if self.use_complex else _t_real
@@ -88,7 +97,8 @@ class Propagator(nn.Module):
         # using a trick that jax's out-of-bounds indexing is clamped
         all_hmf = self.hmf_ops().reshape(-1, self.nbasis, self.nbasis)
         all_vhs, all_lw = self.vhs_ops(fields)
-        log_weight = all_lw.sum() + self.enuc
+        # add a constant shift (total variance of gaussian aux fields) to the log weight
+        log_weight = all_lw.sum() + self.enuc  + 0.5 * self.nts_v * self.nsite
         # scale by the time step in advance
         hmf_steps = self.ts_h.reshape(self.nts_h, 1, 1) * all_hmf
         vhs_steps = jnp.sqrt(-self.ts_v.astype(_t_cplx)).reshape(self.nts_v, 1, 1) * all_vhs

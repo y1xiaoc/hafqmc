@@ -67,7 +67,7 @@ def parse_bool(keys, inputs):
     return res_dict
 
 
-class Sequential(nn.Module):
+class Serial(nn.Module):
     layers : Sequence[nn.Module]
     skip_cxn : bool = True
     actv_fun : Union[str, Callable] = "gelu"
