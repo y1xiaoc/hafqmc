@@ -44,12 +44,14 @@ class AuxField(nn.Module):
 class AuxFieldNet(AuxField):
     hidden_sizes : Optional[Sequence[int]] = None
     actv_fun : str = "gelu"
+    zero_init : bool = True
 
     def setup(self):
         super().setup()
         nhs = self.nhs
-        self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, 
-            kernel_init=partial(nn.zeros, dtype=self.dtype))
+        last_init = (partial(nn.zeros, dtype=self.dtype) if self.zero_init 
+                     else nn.initializers.lecun_normal(dtype=_t_real))
+        self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, kernel_init=last_init)
         if self.hidden_sizes:
             self.network = Serial(
                 [nn.Dense(
