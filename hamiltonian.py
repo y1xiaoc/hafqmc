@@ -1,7 +1,7 @@
 import jax
 from jax import numpy as jnp
 
-from .mol_tools import integrals_from_scf
+from .molecule import integrals_from_scf
 
 ERI_MAX_MEMORY = 8.
 
