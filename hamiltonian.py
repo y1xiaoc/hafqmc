@@ -16,17 +16,15 @@ def calc_ovlp(V, U):
     r"""
     Overlap of two (non-orthogonal) Slater determinants V and U with spin components
 
-    Parameters
-    ----------
-    V, U : tuple of array
-        pair of array for spin up (first) and spin down (second) matrix
-        representation of the bra(V) and ket(U) in calculate the RDM, 
-        with row index (-2) for basis and column index (-1) for electrons. 
+    Args:
+        V, U (tuple of array):
+            pair of array for spin up (first) and spin down (second) matrix
+            representation of the bra(V) and ket(U) in calculate the RDM, 
+            with row index (-2) for basis and column index (-1) for electrons. 
 
-    Returns
-    -------
-    ovlp : float
-        overlap of the two Slater determinants
+    Returns:
+        ovlp (float):
+            overlap of the two Slater determinants
     """
     if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
         return calc_ovlp_ns(V, U)
@@ -45,18 +43,16 @@ def calc_slov(V, U):
     r"""
     Sign and log of overlap of two SD V and U with spin components
 
-    Parameters
-    ----------
-    V, U : array
-        matrix representation of the bra(V) and ket(U) in calculate the RDM, 
-        with row index (-2) for basis and column index (-1) for electrons. 
+    Args:
+        V, U (array):
+            matrix representation of the bra(V) and ket(U) in calculate the RDM, 
+            with row index (-2) for basis and column index (-1) for electrons. 
 
-    Returns
-    -------
-    sign : float
-        sign of the overlap of two SD
-    logdet : float
-        log of the absolute value of the overlap
+    Returns:
+        sign (float):
+            sign of the overlap of two SD
+        logdet (float):
+            log of the absolute value of the overlap
     """
     if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
         return calc_slov_ns(V, U)
@@ -80,7 +76,8 @@ def calc_rdm(V, U):
     r"""
     One-particle reduced density matrix, with both spin components in a tuple
     
-    Calculate the one particle RDM from two (non-orthogonal) Slater determinants (V for bra and U for ket) for each spin components.
+    Calculate the one particle RDM from two (non-orthogonal) 
+    Slater determinants (V for bra and U for ket) for each spin components.
     
     .. math::
         \langle \phi_V | c_i^{\dagger} c_j | \phi_U \rangle =
@@ -88,17 +85,15 @@ def calc_rdm(V, U):
         
     :math:`U` stands for the matrix representation of Slater determinant :math:`|\psi_U\rangle`.
     
-    Parameters
-    ----------
-    V, U : tuple of array
-        pair of array for spin up (first) and spin down (second) matrix
-        representation of the bra(V) and ket(U) in calculate the RDM, 
-        with row index (-2) for basis and column index (-1) for electrons. 
+    Args:
+        V, U (tuple of array):
+            pair of array for spin up (first) and spin down (second) matrix
+            representation of the bra(V) and ket(U) in calculate the RDM, 
+            with row index (-2) for basis and column index (-1) for electrons. 
         
-    Returns
-    -------
-    rdm : array
-        spin up and spin down one-particle reduced density matrix in computing basis
+    Returns:
+        rdm (array):
+            spin up and spin down one-particle reduced density matrix in computing basis
     """
     if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
         return calc_rdm_ns(V, U)
