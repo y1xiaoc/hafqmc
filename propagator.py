@@ -1,4 +1,5 @@
 import jax
+from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from typing import Sequence, Union, Tuple
@@ -108,8 +109,8 @@ class Propagator(nn.Module):
         # using a trick that jax's out-of-bounds indexing is clamped
         all_hmf = self.hmf_ops().reshape(-1, self.nbasis, self.nbasis)
         all_vhs, all_lw = self.vhs_ops(fields)
-        # add a constant shift (total variance of gaussian aux fields) to the log weight
-        log_weight = all_lw.sum() + self.enuc  + 0.5 * self.nts_v * self.nsite
+        # may add a constant shift to the log weight
+        log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
         # scale by the time step in advance
         hmf_steps = self.ts_h.reshape(self.nts_h, 1, 1) * all_hmf
         vhs_steps = jnp.sqrt(-self.ts_v+0j).reshape(self.nts_v, 1, 1) * all_vhs
@@ -125,7 +126,7 @@ class Propagator(nn.Module):
             for op in ops:
                 wfn = expm_apply(op, wfn)
             return wfn, None
-        wfn, _ = jax.lax.scan(app_ops, self.wfn_packed+0j, (hmf_steps[:-1], vhs_steps))
+        wfn, _ = lax.scan(app_ops, self.wfn_packed+0j, (hmf_steps[:-1], vhs_steps))
         wfn = expm_apply(hmf_steps[-1], wfn)
         # split different spin part
         wfn = unpack_spin(wfn, self.nelec)

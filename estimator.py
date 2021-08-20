@@ -1,28 +1,31 @@
 import jax
 import numpy as np
+from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from functools import partial
 from .utils import paxis
+from .hamiltonian import Hamiltonian
+from .propagator import Propagator
 
 
 def expect_unnorm(value, log_weight):
-    aux_factor = jnp.exp(log_weight - jax.lax.stop_gradient(log_weight))
+    aux_factor = jnp.exp(log_weight - lax.stop_gradient(log_weight))
     expect = (value * aux_factor).sum()
     return paxis.psum(expect)
 
 
 def relative_weight(log_target, log_sample, normalize=True):
     diff_lw = log_target - log_sample
-    stblz = paxis.pmax(jax.lax.stop_gradient(diff_lw.max()))
+    stblz = paxis.pmax(lax.stop_gradient(diff_lw.max()))
     diff_weight = jnp.exp(diff_lw - stblz)
     if normalize:
-        mean_weight = paxis.pmean(jax.lax.stop_gradient(diff_weight.mean()))
+        mean_weight = paxis.pmean(lax.stop_gradient(diff_weight.mean()))
         diff_weight = diff_weight / mean_weight
     return diff_weight
 
 
-def make_eval_local(hamil, prop):
+def make_eval_local(hamil: Hamiltonian, prop: Propagator):
     """Create a function that evaluates local energy, sign and log of the overlap.
 
     Args:
@@ -40,6 +43,7 @@ def make_eval_local(hamil, prop):
 
     vapply = jax.vmap(prop.apply, in_axes=(None, 0))
 
+    @jax.jit
     def eval_local(params, fields):
         r"""evaluate the local energy, sign and log-overlap of the bra and ket.
 
@@ -67,7 +71,7 @@ def make_eval_local(hamil, prop):
     return eval_local
 
 
-def make_eval_total(hamil, prop, default_batch=10):
+def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 100):
     """Create a function that evaluates the total energy from a batch of field configurations.
 
     Args:
@@ -89,6 +93,7 @@ def make_eval_total(hamil, prop, default_batch=10):
     eval_local = make_eval_local(hamil, prop)
     batch_eval = jax.vmap(eval_local, in_axes=(None, 0))
         
+    @jax.jit
     def eval_total(params, data):
         r"""evaluate the total energy and the auxiliary estimations from batched data.
 
@@ -117,9 +122,9 @@ def make_eval_total(hamil, prop, default_batch=10):
             if logsw is not None:
                 logsw = logsw.reshape(-1, batch_size)
         assert fields.ndim == 5
-        eloc, sign, logov = jax.lax.map(partial(batch_eval, params), fields)
+        eloc, sign, logov = lax.map(partial(batch_eval, params), fields)
         logov = logov.real # make sure the dtype is real
-        rel_w = (jax.lax.stop_gradient(relative_weight(logov, logsw))
+        rel_w = (lax.stop_gradient(relative_weight(logov, logsw))
                  if logsw is not None else 1.)
         exp_es = expect_unnorm((eloc * sign).real * rel_w, logov)
         exp_s = expect_unnorm(sign.real * rel_w, logov)
