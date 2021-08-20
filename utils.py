@@ -1,12 +1,53 @@
 import jax
+from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from typing import Sequence, Union, Callable
 from functools import partial
+import dataclasses
 
 
 _t_real = jnp.float64
 _t_cplx = jnp.complex128
+
+
+def wrap_if_pmap(p_func):
+
+    def p_func_if_pmap(obj, axis_name):
+        try:
+            jax.core.axis_frame(axis_name)
+            return p_func(obj, axis_name)
+        except NameError:
+            return obj
+
+    return p_func_if_pmap
+
+
+pmax_if_pmap = wrap_if_pmap(lax.pmax)
+pmin_if_pmap = wrap_if_pmap(lax.pmin)
+psum_if_pmap = wrap_if_pmap(lax.psum)
+pmean_if_pmap = wrap_if_pmap(lax.pmean)
+
+
+@dataclasses.dataclass(frozen=True)
+class PAxis:
+    name  : str
+    vmap  : Callable = dataclasses.field(init=False)
+    pmap  : Callable = dataclasses.field(init=False)
+    pmax  : Callable = dataclasses.field(init=False)
+    pmin  : Callable = dataclasses.field(init=False)
+    psum  : Callable = dataclasses.field(init=False)
+    pmean : Callable = dataclasses.field(init=False)
+
+    def __post_init__(self):
+        for nm, fn in (("vmap", jax.vmap), ("pmap", jax.pmap),
+                       ("pmax", pmax_if_pmap), ("pmin", pmin_if_pmap),
+                       ("psum", psum_if_pmap), ("pmean", pmean_if_pmap)):
+            object.__setattr__(self, nm, partial(fn, axis_name=self.name))
+
+
+PMAP_AXIS_NAME = "_pmap_axis"
+paxis = PAxis(PMAP_AXIS_NAME)
 
 
 _EXPMA_S = 2

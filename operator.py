@@ -51,13 +51,15 @@ class AuxFieldNet(AuxField):
         nhs = self.nhs
         last_init = (partial(nn.zeros, dtype=self.dtype) if self.zero_init 
                      else nn.initializers.lecun_normal(dtype=_t_real))
-        self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, kernel_init=last_init)
+        self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, kernel_init=last_init, 
+                                   bias_init=partial(nn.zeros, dtype=self.dtype))
         if self.hidden_sizes:
             self.network = Serial(
                 [nn.Dense(
                     ls if ls and ls > 0 else nhs, 
                     dtype = _t_real,
-                    kernel_init = nn.initializers.lecun_normal(dtype=_t_real)) 
+                    kernel_init = nn.initializers.lecun_normal(dtype=_t_real),
+                    bias_init = partial(nn.zeros, dtype=_t_real)) 
                  for ls in self.hidden_sizes],
                 skip_cxn = True,
                 actv_fun = self.actv_fun)

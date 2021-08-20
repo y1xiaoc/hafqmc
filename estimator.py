@@ -3,19 +3,22 @@ import numpy as np
 from jax import numpy as jnp
 from flax import linen as nn
 from functools import partial
+from .utils import paxis
 
 
 def expect_unnorm(value, log_weight):
     aux_factor = jnp.exp(log_weight - jax.lax.stop_gradient(log_weight))
-    return (value * aux_factor).sum()
+    expect = (value * aux_factor).sum()
+    return paxis.psum(expect)
 
 
 def relative_weight(log_target, log_sample, normalize=True):
     diff_lw = log_target - log_sample
-    diff_lw = diff_lw - jax.lax.stop_gradient(diff_lw.max()) # stabilize
-    diff_weight = jnp.exp(diff_lw)
+    stblz = paxis.pmax(jax.lax.stop_gradient(diff_lw.max()))
+    diff_weight = jnp.exp(diff_lw - stblz)
     if normalize:
-        diff_weight = diff_weight / diff_weight.mean()
+        mean_weight = paxis.pmean(jax.lax.stop_gradient(diff_weight.mean()))
+        diff_weight = diff_weight / mean_weight
     return diff_weight
 
 
@@ -115,6 +118,7 @@ def make_eval_total(hamil, prop, default_batch=10):
                 logsw = logsw.reshape(-1, batch_size)
         assert fields.ndim == 5
         eloc, sign, logov = jax.lax.map(partial(batch_eval, params), fields)
+        logov = logov.real # make sure the dtype is real
         rel_w = (jax.lax.stop_gradient(relative_weight(logov, logsw))
                  if logsw is not None else 1.)
         exp_es = expect_unnorm((eloc * sign).real * rel_w, logov)
