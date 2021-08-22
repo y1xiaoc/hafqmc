@@ -2,13 +2,17 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
-from typing import Sequence, Union, Callable
+from typing import Sequence, Union, Callable, Any
 from functools import partial
 import dataclasses
 
 
 _t_real = jnp.float64
 _t_cplx = jnp.complex128
+
+
+Array = Any
+PyTree = Any
 
 
 def wrap_if_pmap(p_func):
@@ -52,7 +56,8 @@ paxis = PAxis(PMAP_AXIS_NAME)
 
 _EXPMA_S = 2
 _EXPMA_M = 10
-def expm_apply(A, B):
+
+def expm_apply_loop(A, B):
     n = A.shape[-1]
     mu = jnp.trace(A, axis1=-1, axis2=-2) / n
     eta = jnp.expand_dims(jnp.exp(mu), -1)
@@ -64,6 +69,24 @@ def expm_apply(A, B):
             F = F + B
         B = F
     return eta * F
+
+def expm_apply_scan(A, B):
+    n = A.shape[-1]
+    mu = jnp.trace(A, axis1=-1, axis2=-2) / n
+    eta = jnp.expand_dims(jnp.exp(mu), -1)
+    A = A - mu * jnp.identity(n, dtype=A.dtype)
+    ns = jnp.arange(1., _EXPMA_M+1, dtype=A.dtype)
+    def _loop_m(B_and_F, n):
+        B, F = B_and_F
+        B = A @ B / (_EXPMA_S * n)
+        return (B, F + B), None
+    def _loop_s(B, _):
+        (_, B), _ = lax.scan(_loop_m, (B, B), ns)
+        return B, None
+    B, _ = lax.scan(_loop_s, B, None, _EXPMA_S)
+    return eta * B
+
+expm_apply = expm_apply_scan
 
 
 def fix_init(key, value, dtype=None):

@@ -2,8 +2,8 @@ import jax
 import numpy as np
 from jax import lax
 from jax import numpy as jnp
-from flax import linen as nn
 from functools import partial
+
 from .utils import paxis
 from .hamiltonian import Hamiltonian
 from .propagator import Propagator
@@ -108,10 +108,10 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 1
                 If n_loop is not given, calculated from `default_batch` (as the maximum batch size).
 
         Returns:
-            etot (float): 
+            e_tot (float): 
                 the estimated total energy :math:`\frac{ <\Phi|H|\Psi> }{ <\Phi|\Psi> }`
             aux_data (tuple): 
-                the auxiliary estimated data, for now it is (exp_es, exp_s) 
+                the dict for auxiliary estimated data, for now it is {e_tot, exp_es, exp_s}
                 where exp_es is the the estimated `(eloc * sign).real` 
                 and exp_s is the estimated `sign.real`.
         """
@@ -128,6 +128,8 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 1
                  if logsw is not None else 1.)
         exp_es = expect_unnorm((eloc * sign).real * rel_w, logov)
         exp_s = expect_unnorm(sign.real * rel_w, logov)
-        return exp_es / exp_s, (exp_es / eloc.size, exp_s / eloc.size)
+        etot = exp_es / exp_s
+        aux_data = {"e_tot": etot, "exp_es": exp_es / eloc.size, "exp_s": exp_s / eloc.size}
+        return etot, aux_data
             
     return eval_total

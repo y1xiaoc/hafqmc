@@ -1,8 +1,11 @@
 import jax
 from jax import lax
 from jax import numpy as jnp
+from typing import NamedTuple, Callable, Tuple
 from functools import partial
+
 from .propagator import Propagator
+from .utils import PyTree, Array
 
 
 def log_dens_gaussian(x, mu=0., sigma=1.):
@@ -17,30 +20,54 @@ def get_shape(prop: Propagator):
     return (2, nts, nsite)
 
 
-def make_multistep(sample_fn, nstep, concat=False):
+KeyArray = Array
+Params = PyTree
+State = PyTree
+Data = PyTree
+class MCSampler(NamedTuple):
+    sample: Callable[[KeyArray, Params, State], Tuple[State, Data]]
+    init: Callable[..., State]
+    def __call__(self, *args, **kwargs):
+        """Call the sample function. See `self.sample` for details."""
+        return self.sample(*args, **kwargs)
 
-    def sample_multi(params, key, fields, aux_data=None):
-        inner = lambda c,i: sample_fn(params, *c)
-        new_carry, data = lax.scan(inner, (key, fields, aux_data), None, nstep)
+
+def make_multistep(sampler, nstep, concat=False):
+    sample_fn, init_fn = (sampler if isinstance(sampler, tuple) 
+                          else sampler, None)
+
+    def multi_sample(key, params, state):
+        inner = lambda s,k: sample_fn(k, params, s)
+        keys = jax.random.split(key, nstep)
+        new_state, data = lax.scan(inner, state, keys)
         if concat:
             data = jax.tree_map(jnp.concatenate, data)
-        return new_carry, data
+        return new_state, data
     
-    return sample_multi
+    return (MCSampler(multi_sample, init_fn) 
+            if isinstance(sampler, tuple) else multi_sample)
+
+
+def make_sampler(name: str, prop: Propagator, **kwargs):
+    name = name.lower()
+    if name == "gaussian":
+        maker = make_gaussian
+    else:
+        raise NotImplementedError(f"unsupported sampler type: {name}")
+    return maker(prop, **kwargs)
 
 
 def make_gaussian(prop: Propagator, mu=0., sigma=1.):
     sample_shape = get_shape(prop)
 
     @jax.jit
-    def sample(params, key, fields, aux_data=None):
-        key, subkey = jax.random.split(key)
-        nbatch = fields.shape[0]
-        new_fields = jax.random.normal(subkey, (nbatch, *sample_shape)) * sigma + mu
+    def sample(key, params, state):
+        nbatch = state.shape[0]
+        new_fields = jax.random.normal(key, (nbatch, *sample_shape)) * sigma + mu
         new_logdens = log_dens_gaussian(new_fields, mu, sigma).sum((-1,-2,-3))
-        return (key, new_fields, aux_data), (new_fields, new_logdens)
+        return state, (new_fields, new_logdens)
     
-    def init(params, key, batch_size, **kwargs):
-        return sample(params, key, jnp.zeros((batch_size, *sample_shape)), None)[0]
+    def init(key, params, batch_size, **kwargs):
+        return jnp.zeros(batch_size)
 
-    return sample, init
+    return MCSampler(sample, init)
