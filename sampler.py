@@ -16,8 +16,8 @@ def log_dens_gaussian(x, mu=0., sigma=1.):
 def get_shape(prop: Propagator):
     """"calculate needed field shape from propagator: [2 x nts x nsite]"""
     nts = len(prop.init_tsteps)
-    nsite = prop.init_vhs.shape[0]
-    return (2, nts, nsite)
+    nfield = prop.init_vhs.shape[0] + prop.extra_field
+    return (2, nts, nfield)
 
 
 KeyArray = Array
@@ -48,7 +48,7 @@ def make_multistep(sampler, nstep, concat=False):
             if isinstance(sampler, tuple) else multi_sample)
 
 
-def make_sampler(name: str, prop: Propagator, **kwargs):
+def make_sampler(prop: Propagator, name: str, **kwargs):
     name = name.lower()
     if name == "gaussian":
         maker = make_gaussian
@@ -67,7 +67,7 @@ def make_gaussian(prop: Propagator, mu=0., sigma=1.):
         new_logdens = log_dens_gaussian(new_fields, mu, sigma).sum((-1,-2,-3))
         return state, (new_fields, new_logdens)
     
-    def init(key, params, batch_size, **kwargs):
-        return jnp.zeros(batch_size)
+    def init(key, params, batch_size, burn_in=0, **kwargs):
+        return sample(key, params, jnp.zeros((batch_size, *sample_shape)))
 
     return MCSampler(sample, init)

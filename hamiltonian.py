@@ -1,9 +1,7 @@
 import jax
 from jax import numpy as jnp
 
-from .molecule import integrals_from_scf
-
-ERI_MAX_MEMORY = 8.
+from .molecule import integrals_from_scf, initwfn_from_scf
 
     
 def calc_ovlp_ns(V, U):
@@ -162,20 +160,18 @@ def calc_v0_chol(ceri):
 @jax.tree_util.register_pytree_node_class
 class Hamiltonian(object):
 
-    def __init__(self, h1e, ceri, enuc=0.):
+    def __init__(self, h1e, ceri, enuc=0., full_eri=False):
         self.h1e = jnp.asarray(h1e)
         self.ceri = jnp.asarray(ceri)
-        if ceri.shape[-1]**4 * 8 / 1024**3 <= ERI_MAX_MEMORY:
-            self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri)
-        else:
-            self._eri = ceri
+        self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri) if full_eri else None
         self.enuc = enuc
 
     def calc_e1b(self, rdm):
         return calc_e1b(self.h1e, rdm)
     
     def calc_e2b(self, rdm):
-        return calc_e2b(self._eri, rdm)
+        eri = self.ceri if self._eri is None else self._eri
+        return calc_e2b(eri, rdm)
 
     calc_ovlp = staticmethod(calc_ovlp)
     calc_slov = staticmethod(calc_slov)
@@ -189,7 +185,8 @@ class Hamiltonian(object):
     # @jax.jit
     def make_proj_op(self, trial):
         """generate the modified hmf, vhs and enuc for projection"""
-        hmf_raw = self.h1e - 0.5 * calc_v0(self._eri)
+        eri = self.ceri if self._eri is None else self._eri
+        hmf_raw = self.h1e - 0.5 * calc_v0(eri)
         vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
         rdm_t = calc_rdm(trial, trial)
         if rdm_t.ndim == 3: rdm_t = rdm_t.sum(0)
@@ -200,13 +197,23 @@ class Hamiltonian(object):
         return hmf, vhs, enuc
 
     @classmethod
-    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None):
+    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None, full_eri=False):
         if not hasattr(mol_or_mf, "mo_coeff"):
             mf = mol_or_mf.HF()
         else:
             mf = mol_or_mf
         return cls(*integrals_from_scf(mf, 
-            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao))
+            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao), full_eri=full_eri)
+
+    @classmethod
+    def from_pyscf_with_wfn(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None, full_eri=False):
+        if not hasattr(mol_or_mf, "mo_coeff"):
+            mf = mol_or_mf.HF()
+        else:
+            mf = mol_or_mf
+        hamil = cls.from_pyscf(mf, chol_cut, orth_ao, full_eri)
+        wfn = initwfn_from_scf(mf, orth_ao)
+        return hamil, wfn
     
     def tree_flatten(self):
         fields = ("h1e", "ceri", "enuc", "_eri")

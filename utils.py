@@ -130,6 +130,12 @@ def parse_bool(keys, inputs):
             res_dict[key] = key in inputs
     return res_dict
 
+def ensure_mapping(obj, default_key="name"):
+    try:
+        dict(**obj)
+        return obj
+    except TypeError:
+        return {default_key: obj}
 
 class Serial(nn.Module):
     layers : Sequence[nn.Module]
@@ -143,8 +149,11 @@ class Serial(nn.Module):
             tmp = lyr(x)
             if i != len(self.layers) - 1:
                 tmp = actv(tmp)
-            if self.skip_cxn and x.shape[-1] == tmp.shape[-1]:
-                x = x + tmp
+            if self.skip_cxn:
+                if x.shape[-1] >= tmp.shape[-1]:
+                    x = x[...,:tmp.shape[-1]] + tmp
+                else:
+                    x = tmp.at[...,:x.shape[-1]].add(x)
             else:
                 x = tmp
         return x

@@ -78,3 +78,11 @@ def initwfn_from_scf(mf, orth_ao=None):
         mo_b = mf.mo_coeff[:, mf.mo_occ > 0]
     assert (mo_a.shape[1], mo_b.shape[1]) == mf.mol.nelec
     return rotate_wfn((mo_a, mo_b), X)
+
+
+def build_mf(**mol_args):
+    from pyscf import gto
+    scf_args = mol_args.pop("scf", {})
+    mol = gto.M(dump_input=False, parse_arg=False, **mol_args)
+    mf = mol.HF().set(**scf_args).run()
+    return mf

@@ -20,6 +20,7 @@ class Propagator(nn.Module):
     init_enuc : float
     init_wfn : Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]
     init_tsteps : Sequence[float]
+    extra_field : int = 0
     parametrize : Union[bool, str, Sequence[int]] = True
     timevarying : Union[bool, str, Sequence[int]] = False
     aux_network : Union[None, Sequence[int], dict] = None
@@ -27,12 +28,14 @@ class Propagator(nn.Module):
 
     @classmethod
     def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
-               max_nhs=None, parametrize=True, timevarying=False, aux_network=None, use_complex=False):
+               max_nhs=None, extra_field=0, 
+               parametrize=True, timevarying=False, 
+               aux_network=None, use_complex=False):
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
         return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, 
-                   parametrize, timevarying, aux_network, use_complex)
+                   extra_field, parametrize, timevarying, aux_network, use_complex)
 
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
