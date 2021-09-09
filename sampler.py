@@ -32,10 +32,8 @@ class MCSampler(NamedTuple):
         return self.sample(*args, **kwargs)
 
 
-def make_multistep(sampler, nstep, concat=False):
-    sample_fn, init_fn = (sampler if isinstance(sampler, tuple) 
-                          else sampler, None)
-
+def make_multistep_fn(sample_fn, nstep, concat=False):
+    @jax.jit
     def multi_sample(key, params, state):
         inner = lambda s,k: sample_fn(k, params, s)
         keys = jax.random.split(key, nstep)
@@ -43,9 +41,12 @@ def make_multistep(sampler, nstep, concat=False):
         if concat:
             data = jax.tree_map(jnp.concatenate, data)
         return new_state, data
-    
-    return (MCSampler(multi_sample, init_fn) 
-            if isinstance(sampler, tuple) else multi_sample)
+    return multi_sample
+
+def make_multistep(sampler, nstep, concat=False):
+    sample_fn, init_fn = sampler
+    multisample_fn = make_multistep_fn(sample_fn, nstep, concat)
+    return MCSampler(multisample_fn, init_fn)
 
 
 def make_sampler(prop: Propagator, name: str, **kwargs):
@@ -68,6 +69,6 @@ def make_gaussian(prop: Propagator, mu=0., sigma=1.):
         return state, (new_fields, new_logdens)
     
     def init(key, params, batch_size, burn_in=0, **kwargs):
-        return sample(key, params, jnp.zeros((batch_size, *sample_shape)))
+        return sample(key, params, jnp.zeros((batch_size, *sample_shape)))[0]
 
     return MCSampler(sample, init)

@@ -4,6 +4,7 @@ from jax import lax
 from jax import numpy as jnp
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
+import time
 from absl import logging
 
 from .molecule import build_mf
@@ -14,8 +15,8 @@ from .sampler import get_shape, make_sampler, make_multistep
 from .utils import ensure_mapping
 
 
-def sign_penalty(s, factor=1., power=2.):
-    return factor * (1-s) ** power
+def sign_penalty(s, factor=1., target=1., power=2.):
+    return factor * jnp.maximum(target - s, 0) ** power
 
 
 def make_optimizer(name, lr_schedule, **kwargs):
@@ -27,12 +28,12 @@ def make_lr_schedule(start=1e-4, delay=1e4, decay=1.):
     return lambda t: start * jnp.power((1.0 / (1.0 + (t/delay))), decay)
 
 
-def make_loss(expect_fn, sign_factor=1., sign_power=2.):
+def make_loss(expect_fn, sign_factor=1., sign_target=1., sign_power=2.):
 
     def loss(params, data):
         e_tot, aux = expect_fn(params, data)
         exp_s = aux["exp_s"]
-        sp = sign_penalty(exp_s, sign_factor, sign_power)
+        sp = sign_penalty(exp_s, sign_factor, sign_target, sign_power)
         return e_tot + sp, aux
          
     return loss
@@ -51,7 +52,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
         
 
 def train(cfg: ConfigDict):
-    # setup the systems first
+    # get the constants
     key = jax.random.PRNGKey(cfg.seed)
     total_iter = cfg.optim.iteration
     sample_size = cfg.sample.size
@@ -75,9 +76,10 @@ def train(cfg: ConfigDict):
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, propagator, default_batch=batch_size)
     loss_fn = make_loss(expect_fn, **cfg.loss)
-    loss_and_grad = jax.grad(loss_fn)
+    loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
     train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
+    train_step = jax.jit(train_step)
     
     key, pakey, mckey = jax.random.split(key, 3)
     field_shape = get_shape(propagator)
@@ -85,4 +87,9 @@ def train(cfg: ConfigDict):
     mc_state = mc_sampler.init(mckey, params, batch_size, cfg.sample.burn_in)
     opt_state = optimizer.init(params)
 
-    # carry = (params, mc_state, opt_state)
+    for ii in range(total_iter):
+        tic = time.time()
+        key, subkey = jax.random.split(key)
+        (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
+    
+        print(f"{ii}\t{loss:.4f}\t{aux['e_tot']:.4f}\t{aux['exp_es']:.4f}\t{aux['exp_s']:.4f}\t{time.time()-tic:.4f}")

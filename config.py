@@ -3,6 +3,7 @@ from ml_collections import ConfigDict, config_dict
 
 def default() -> ConfigDict:
     cfg = ConfigDict({
+        "seed": 0,
         "molecule": config_dict.placeholder(dict, required=True),
         "hamiltonian": {
             "chol_cut": 1e-6,
@@ -10,13 +11,14 @@ def default() -> ConfigDict:
             "full_eri": False,
         },
         "propagator":{
+            "max_nhs": None,
             "init_tsteps": [0.01]*10,
             "extra_field": 0,
             "parametrize": True,
             "timevarying": False,
             "aux_network": {
                 "hidden_sizes": [-1, -1, -1],
-                "actv_fn": "gelu",
+                "actv_fun": "gelu",
                 "zero_init": True,
             },
             "use_complex" : False,
@@ -24,15 +26,16 @@ def default() -> ConfigDict:
         "sample": {
             "size": 10_000,
             "sampler": "gaussian", # {"name": "gaussian"},
-            "batch": 100,
+            "batch": 1_000,
             "burn_in": 0,
         },
         "loss": {
             "sign_factor": 1.,
+            "sign_target": 0.5,
             "sign_power": 2.,
         },
         "optim": {
-            "iteration": 100000,
+            "iteration": 100_000,
             "optimizer": "adam", # {"name": "adam"},
             "lr": {
                 "start" : 1e-4,
@@ -41,3 +44,5 @@ def default() -> ConfigDict:
             },
         },
     })
+
+    return cfg

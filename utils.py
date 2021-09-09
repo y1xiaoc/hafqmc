@@ -132,8 +132,7 @@ def parse_bool(keys, inputs):
 
 def ensure_mapping(obj, default_key="name"):
     try:
-        dict(**obj)
-        return obj
+        return dict(**obj)
     except TypeError:
         return {default_key: obj}
 

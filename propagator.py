@@ -6,7 +6,7 @@ from typing import Sequence, Union, Tuple
 import collections
 
 from .utils import _t_real, _t_cplx
-from .utils import parse_bool
+from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin
 from .utils import expm_apply
@@ -92,9 +92,7 @@ class Propagator(nn.Module):
             network_args = {}
         else:
             AuxFieldCls = AuxFieldNet
-            network_args = (self.aux_network 
-                            if isinstance(self.aux_network, collections.abc.Mapping) 
-                            else {"hidden_sizes": self.aux_network})
+            network_args = ensure_mapping(self.aux_network, "hidden_sizes")
         AuxFieldCls = nn.vmap(
             AuxFieldCls,
             in_axes=0,
