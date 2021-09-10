@@ -54,8 +54,8 @@ PMAP_AXIS_NAME = "_pmap_axis"
 paxis = PAxis(PMAP_AXIS_NAME)
 
 
-_EXPMA_S = 2
-_EXPMA_M = 10
+_EXPMA_S = 1
+_EXPMA_M = 6
 
 def expm_apply_loop(A, B):
     n = A.shape[-1]
