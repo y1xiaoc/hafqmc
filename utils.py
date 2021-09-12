@@ -5,6 +5,7 @@ from flax import linen as nn
 from typing import Sequence, Union, Callable, Any
 from functools import partial
 import dataclasses
+import pickle
 
 
 _t_real = jnp.float64
@@ -135,6 +136,16 @@ def ensure_mapping(obj, default_key="name"):
         return dict(**obj)
     except TypeError:
         return {default_key: obj}
+
+
+def save_pickle(filename, data):
+    with open(filename, 'wb') as file:
+        pickle.dump(data, file)
+
+def load_pickle(filename, data):
+    with open(filename, 'rb') as file:
+        return pickle.load(file)
+
 
 class Serial(nn.Module):
     layers : Sequence[nn.Module]

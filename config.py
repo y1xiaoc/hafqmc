@@ -2,8 +2,8 @@ from ml_collections import ConfigDict, config_dict
 
 
 def default() -> ConfigDict:
-    cfg = ConfigDict({
-        "seed": 0,
+    return ConfigDict({
+        "seed": config_dict.placeholder(int, required=True),
         "molecule": config_dict.placeholder(dict, required=True),
         "hamiltonian": {
             "chol_cut": 1e-6,
@@ -15,7 +15,7 @@ def default() -> ConfigDict:
             "init_tsteps": [0.01]*10,
             "extra_field": 0,
             "parametrize": True,
-            "timevarying": False,
+            "timevarying": "hmf",
             "aux_network": {
                 "hidden_sizes": [-1, -1, -1],
                 "actv_fun": "gelu",
@@ -35,7 +35,7 @@ def default() -> ConfigDict:
             "sign_power": 2.,
         },
         "optim": {
-            "iteration": 100_000,
+            "iteration": 10_000,
             "optimizer": "adam", # {"name": "adam"},
             "lr": {
                 "start" : 1e-4,
@@ -43,6 +43,11 @@ def default() -> ConfigDict:
                 "decay" : 1.0
             },
         },
+        "log": {
+            "stat_freq": 1,
+            "stat_path": "tbdata/",
+            "ckpt_freq": 100,
+            "ckpt_path": "checkpoint.pkl",
+            "level": "WARNING"
+        }
     })
-
-    return cfg

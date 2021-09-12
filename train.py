@@ -1,18 +1,19 @@
+import time
+import logging
 import jax 
 import optax
 from jax import lax
 from jax import numpy as jnp
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
-import time
-from absl import logging
+from tensorboardX import SummaryWriter
 
 from .molecule import build_mf
 from .hamiltonian import Hamiltonian
 from .propagator import Propagator
 from .estimator import make_eval_total
 from .sampler import get_shape, make_sampler, make_multistep
-from .utils import ensure_mapping
+from .utils import ensure_mapping, save_pickle
 
 
 def sign_penalty(s, factor=1., target=1., power=2.):
@@ -52,6 +53,11 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
         
 
 def train(cfg: ConfigDict):
+    # handle logging
+    numeric_level = getattr(logging, cfg.log.level.upper())
+    logging.basicConfig(level=numeric_level)
+    writer = SummaryWriter(cfg.log.stat_path)
+
     # get the constants
     key = jax.random.PRNGKey(cfg.seed)
     total_iter = cfg.optim.iteration
@@ -61,11 +67,13 @@ def train(cfg: ConfigDict):
         logging.warning("sample size is not divisible by batch size, round up")
     batch_multi = -(-sample_size // batch_size)
 
+    # do the scf calculation as init guess
     mf = build_mf(**cfg.molecule)
-    logging.info("HF energy from pyscf calculation: %f", mf.e_tot)
+    print(f"# HF energy from pyscf calculation: {mf.e_tot}")
     if not mf.converged:
         logging.warning("HF calculation does not converge!")
 
+    # set up all classes and functions
     hamiltonian, init_wfn = Hamiltonian.from_pyscf_with_wfn(mf, **cfg.hamiltonian)
     propagator = Propagator.create(hamiltonian, init_wfn, **cfg.propagator)
     sampler_1s = make_sampler(propagator, 
@@ -78,18 +86,31 @@ def train(cfg: ConfigDict):
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
+    # the core training iteration, to be pmaped
     train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
     train_step = jax.jit(train_step)
     
+    # set up all states
     key, pakey, mckey = jax.random.split(key, 3)
     field_shape = get_shape(propagator)
     params = propagator.init(pakey, jnp.zeros(field_shape[-2:]))
     mc_state = mc_sampler.init(mckey, params, batch_size, cfg.sample.burn_in)
     opt_state = optimizer.init(params)
 
+    # the actual training iteration
     for ii in range(total_iter):
         tic = time.time()
         key, subkey = jax.random.split(key)
         (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
+
+        # logging anc checkpointing
+        if ii == 0:
+            print("# step\tloss\te_tot\texp_es\texp_s\ttime")
+        if ii % cfg.log.stat_freq == 0:
+            print(f"{ii}\t{loss:.4f}\t{aux['e_tot']:.4f}\t"
+                  f"{aux['exp_es']:.4f}\t{aux['exp_s']:.4f}\t{time.time()-tic:.4f}")
+            writer.add_scalars("stat", {"loss": loss, **aux}, global_step=ii)
+        if ii % cfg.log.ckpt_freq == 0:
+            save_pickle(cfg.log.ckpt_path, (key, params, mc_state, opt_state))
     
-        print(f"{ii}\t{loss:.4f}\t{aux['e_tot']:.4f}\t{aux['exp_es']:.4f}\t{aux['exp_s']:.4f}\t{time.time()-tic:.4f}")
+    return params, mc_state, opt_state

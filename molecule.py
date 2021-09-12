@@ -80,9 +80,9 @@ def initwfn_from_scf(mf, orth_ao=None):
     return rotate_wfn((mo_a, mo_b), X)
 
 
-def build_mf(**mol_args):
+def build_mf(verbose=0, **mol_args):
     from pyscf import gto
     scf_args = mol_args.pop("scf", {})
-    mol = gto.M(dump_input=False, parse_arg=False, **mol_args)
+    mol = gto.M(dump_input=False, parse_arg=False, verbose=verbose, **mol_args)
     mf = mol.HF().set(**scf_args).run()
     return mf
