@@ -20,9 +20,12 @@ def sign_penalty(s, factor=1., target=1., power=2.):
     return factor * jnp.maximum(target - s, 0) ** power
 
 
-def make_optimizer(name, lr_schedule, **kwargs):
+def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
     opt_fn = getattr(optax_alias, name)
-    return opt_fn(lr_schedule, *kwargs)
+    opt = opt_fn(lr_schedule, *kwargs)
+    if grad_clip is not None:
+        opt = optax.chain(opt, optax.clip(grad_clip))
+    return opt
 
 
 def make_lr_schedule(start=1e-4, delay=1e4, decay=1.):
@@ -80,7 +83,7 @@ def train(cfg: ConfigDict):
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
     mc_sampler = make_multistep(sampler_1s, batch_multi, concat=False)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
-    optimizer = make_optimizer(lr_schedule=lr_schedule, 
+    optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, propagator, default_batch=batch_size)
     loss_fn = make_loss(expect_fn, **cfg.loss)

@@ -37,6 +37,7 @@ def default() -> ConfigDict:
         "optim": {
             "iteration": 10_000,
             "optimizer": "adam", # {"name": "adam"},
+            "grad_clip": 1.,
             "lr": {
                 "start" : 1e-4,
                 "delay" : 1e4,
