@@ -9,7 +9,7 @@ from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin
-from .utils import expm_apply
+from .utils import expm_apply, cmult
 from .operator import OneBody, AuxField, AuxFieldNet
 from .hamiltonian import calc_slov
 
@@ -107,17 +107,25 @@ class Propagator(nn.Module):
             **network_args)
 
     def __call__(self, fields):
-        # using a trick that jax's out-of-bounds indexing is clamped
-        all_hmf = self.hmf_ops().reshape(-1, self.nbasis, self.nbasis)
+        # get ops without time
+        all_hmf = self.hmf_ops()
         all_vhs, all_lw = self.vhs_ops(fields)
         # may add a constant shift to the log weight
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
-        # scale by the time step in advance
-        hmf_steps = self.ts_h.reshape(self.nts_h, 1, 1) * all_hmf
-        vhs_steps = jnp.sqrt(-self.ts_v+0j).reshape(self.nts_v, 1, 1) * all_vhs
+        # scale by the time step in advance, cmult is just complex number multiply
+        hmf_steps = cmult(self.ts_h.reshape(self.nts_h, 1, 1), all_hmf)
+        vhs_steps = cmult(jnp.sqrt(-self.ts_v+0j).reshape(self.nts_v, 1, 1), all_vhs)
+        # take out the trace to help expm_apply converge
+        hmf_tr = jnp.trace(hmf_steps, 0, -1, -2) / self.nbasis
+        hmf_steps = hmf_steps - hmf_tr[..., None, None] * jnp.identity(self.nbasis)
+        vhs_tr = jnp.trace(vhs_steps, 0, -1, -2) / self.nbasis
+        vhs_steps = vhs_steps - vhs_tr[..., None, None] * jnp.identity(self.nbasis)
+        # put real part of the trace into log weight
+        sum_tr = hmf_tr.sum() + vhs_tr.sum()
+        log_weight = log_weight + sum_tr.real
         # iteratively apply the projection step
         ####### begin naive for loop version #######
-        # wfn = self.wfn_packed
+        # wfn = self.wfn_packed+0j
         # for its in range(self.nts_v):
         #     wfn = expm_apply(hmf_steps[its], wfn)
         #     wfn = expm_apply(vhs_steps[its], wfn)
@@ -129,6 +137,8 @@ class Propagator(nn.Module):
             return wfn, None
         wfn, _ = lax.scan(app_ops, self.wfn_packed+0j, (hmf_steps[:-1], vhs_steps))
         wfn = expm_apply(hmf_steps[-1], wfn)
+        # add the imag part of the trace
+        wfn = wfn * jnp.exp(sum_tr.imag * 1j)
         # split different spin part
         wfn = unpack_spin(wfn, self.nelec)
         # return both the wave function matrix and the log of scalar part

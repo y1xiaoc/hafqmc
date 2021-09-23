@@ -1,6 +1,7 @@
 import jax
 from jax import lax
 from jax import numpy as jnp
+from jax import scipy as jsp
 from flax import linen as nn
 from typing import Sequence, Union, Callable, Any
 from functools import partial
@@ -59,23 +60,23 @@ _EXPMA_S = 1
 _EXPMA_M = 6
 
 def expm_apply_loop(A, B):
-    n = A.shape[-1]
-    mu = jnp.trace(A, axis1=-1, axis2=-2) / n
-    eta = jnp.expand_dims(jnp.exp(mu), -1)
-    A = A - mu * jnp.identity(n, dtype=A.dtype)
+    # n = A.shape[-1]
+    # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
+    # eta = jnp.expand_dims(jnp.exp(mu), -1)
+    # A = A - mu * jnp.identity(n, dtype=A.dtype)
     F = B
     for _ in range(_EXPMA_S):
         for n in range(1, _EXPMA_M + 1):
             B = A @ B / (_EXPMA_S * n)
             F = F + B
         B = F
-    return eta * F
+    return F # * eta
 
 def expm_apply_scan(A, B):
-    n = A.shape[-1]
-    mu = jnp.trace(A, axis1=-1, axis2=-2) / n
-    eta = jnp.expand_dims(jnp.exp(mu), -1)
-    A = A - mu * jnp.identity(n, dtype=A.dtype)
+    # n = A.shape[-1]
+    # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
+    # eta = jnp.expand_dims(jnp.exp(mu), -1)
+    # A = A - mu * jnp.identity(n, dtype=A.dtype)
     ns = jnp.arange(1., _EXPMA_M+1, dtype=A.dtype)
     def _loop_m(B_and_F, n):
         B, F = B_and_F
@@ -85,9 +86,18 @@ def expm_apply_scan(A, B):
         (_, B), _ = lax.scan(_loop_m, (B, B), ns)
         return B, None
     B, _ = lax.scan(_loop_s, B, None, _EXPMA_S)
-    return eta * B
+    return B # * eta
+
+def expm_apply_exact(A, B):
+    exp_A = jsp.linalg.expm(A)
+    return exp_A @ B
 
 expm_apply = expm_apply_scan
+
+
+def cmult(x1, x2):
+    return ((x1.real * x2.real - x1.imag * x2.imag) 
+        + 1j * (x1.imag * x2.real + x1.real * x2.imag))
 
 
 def fix_init(key, value, dtype=None):
@@ -123,6 +133,10 @@ def parse_activation(name, **kwargs):
 
 def parse_bool(keys, inputs):
     res_dict = {}
+    if isinstance(inputs, str) and inputs.lower() in ("all", "true"):
+        inputs = True
+    if isinstance(inputs, str) and inputs.lower() in ("none", "false"):
+        inputs = False
     if isinstance(inputs, bool):
         for key in keys:
             res_dict[key] = inputs

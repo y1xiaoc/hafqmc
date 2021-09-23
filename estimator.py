@@ -122,14 +122,19 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 1
             if logsw is not None:
                 logsw = logsw.reshape(-1, batch_size)
         assert fields.ndim == 5
-        eloc, sign, logov = lax.map(partial(batch_eval, params), fields)
+        eval_fn = partial(batch_eval, params)
+        if fields.shape[0] > 1:
+            eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
+        eloc, sign, logov = lax.map(eval_fn, fields)
         logov = logov.real # make sure the dtype is real
         rel_w = (lax.stop_gradient(relative_weight(logov, logsw))
                  if logsw is not None else 1.)
         exp_es = expect_unnorm((eloc * sign).real * rel_w, logov)
         exp_s = expect_unnorm(sign.real * rel_w, logov)
         etot = exp_es / exp_s
-        aux_data = {"e_tot": etot, "exp_es": exp_es / eloc.size, "exp_s": exp_s / eloc.size}
+        aux_data = {"e_tot": etot, 
+                    "exp_es": exp_es / eloc.size, 
+                    "exp_s": exp_s / eloc.size}
         return etot, aux_data
             
     return eval_total

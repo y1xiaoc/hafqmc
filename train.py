@@ -60,6 +60,9 @@ def train(cfg: ConfigDict):
     numeric_level = getattr(logging, cfg.log.level.upper())
     logging.basicConfig(level=numeric_level)
     writer = SummaryWriter(cfg.log.stat_path)
+    if cfg.log.hpar_path:
+        with open(cfg.log.hpar_path, "w") as hpfile:
+            print(cfg, file=hpfile)
 
     # get the constants
     key = jax.random.PRNGKey(cfg.seed)

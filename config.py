@@ -49,6 +49,7 @@ def default() -> ConfigDict:
             "stat_path": "tbdata/",
             "ckpt_freq": 100,
             "ckpt_path": "checkpoint.pkl",
+            "hpar_path": "hparams.yml",
             "level": "WARNING"
         }
     })
