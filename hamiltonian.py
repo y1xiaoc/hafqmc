@@ -182,7 +182,6 @@ class Hamiltonian(object):
         rdm = calc_rdm(bra, ket)
         return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
 
-    # @jax.jit
     def make_proj_op(self, trial):
         """generate the modified hmf, vhs and enuc for projection"""
         eri = self.ceri if self._eri is None else self._eri

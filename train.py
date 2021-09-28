@@ -24,7 +24,7 @@ def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
     opt_fn = getattr(optax_alias, name)
     opt = opt_fn(lr_schedule, *kwargs)
     if grad_clip is not None:
-        opt = optax.chain(opt, optax.clip(grad_clip))
+        opt = optax.chain(optax.clip(grad_clip), opt)
     return opt
 
 
@@ -50,6 +50,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
         (loss, aux), grads = loss_and_grad(params, data)
         updates, opt_state = optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
+        mc_state = mc_sampler.refresh(mc_state, params)
         return (params, mc_state, opt_state), (loss, aux)
 
     return step
@@ -58,7 +59,8 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
 def train(cfg: ConfigDict):
     # handle logging
     numeric_level = getattr(logging, cfg.log.level.upper())
-    logging.basicConfig(level=numeric_level)
+    logging.basicConfig(level=numeric_level,
+        format='# [%(asctime)s] %(levelname)s: %(message)s')
     writer = SummaryWriter(cfg.log.stat_path)
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
@@ -70,16 +72,19 @@ def train(cfg: ConfigDict):
     sample_size = cfg.sample.size
     batch_size = cfg.sample.batch
     if sample_size % batch_size != 0:
-        logging.warning("sample size is not divisible by batch size, round up")
+        logging.warning("Sample size not divisible by batch size, rounding up")
     batch_multi = -(-sample_size // batch_size)
+    sample_size = batch_size * batch_multi
 
     # do the scf calculation as init guess
+    logging.info("Building molecule and doing HF calculation")
     mf = build_mf(**cfg.molecule)
     print(f"# HF energy from pyscf calculation: {mf.e_tot}")
     if not mf.converged:
         logging.warning("HF calculation does not converge!")
 
     # set up all classes and functions
+    logging.info("Setting up the training loop")
     hamiltonian, init_wfn = Hamiltonian.from_pyscf_with_wfn(mf, **cfg.hamiltonian)
     propagator = Propagator.create(hamiltonian, init_wfn, **cfg.propagator)
     sampler_1s = make_sampler(propagator, 
@@ -97,21 +102,27 @@ def train(cfg: ConfigDict):
     train_step = jax.jit(train_step)
     
     # set up all states
+    logging.info("Initializing parameters and states")
     key, pakey, mckey = jax.random.split(key, 3)
     field_shape = get_shape(propagator)
     params = propagator.init(pakey, jnp.zeros(field_shape[-2:]))
-    mc_state = mc_sampler.init(mckey, params, batch_size, cfg.sample.burn_in)
+    mc_state = mc_sampler.init(mckey, params, batch_size)
     opt_state = optimizer.init(params)
+    if cfg.sample.burn_in > 0:
+        logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
+        for ii in range(cfg.sample.burn_in):
+            key, subkey = jax.random.split(key)
+            mc_state, _ = jax.jit(sampler_1s.sample)(subkey, params, mc_state)
 
     # the actual training iteration
+    logging.info("Start training")
+    print("# step\tloss\te_tot\texp_es\texp_s\ttime")
     for ii in range(total_iter):
         tic = time.time()
         key, subkey = jax.random.split(key)
         (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
 
         # logging anc checkpointing
-        if ii == 0:
-            print("# step\tloss\te_tot\texp_es\texp_s\ttime")
         if ii % cfg.log.stat_freq == 0:
             print(f"{ii}\t{loss:.4f}\t{aux['e_tot']:.4f}\t"
                   f"{aux['exp_es']:.4f}\t{aux['exp_s']:.4f}\t{time.time()-tic:.4f}")

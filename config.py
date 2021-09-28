@@ -25,9 +25,13 @@ def default() -> ConfigDict:
         },
         "sample": {
             "size": 10_000,
-            "sampler": "gaussian", # {"name": "gaussian"},
+            "sampler": {
+                "name": "metropolis",
+                "sigma": 0.05,
+                "steps": 5,
+            },
             "batch": 1_000,
-            "burn_in": 0,
+            "burn_in": 1_000,
         },
         "loss": {
             "sign_factor": 1.,
@@ -40,8 +44,8 @@ def default() -> ConfigDict:
             "grad_clip": 1.,
             "lr": {
                 "start" : 1e-4,
-                "delay" : 1e4,
-                "decay" : 1.0
+                "delay" : 1e3,
+                "decay" : 1.0,
             },
         },
         "log": {
@@ -50,6 +54,6 @@ def default() -> ConfigDict:
             "ckpt_freq": 100,
             "ckpt_path": "checkpoint.pkl",
             "hpar_path": "hparams.yml",
-            "level": "WARNING"
+            "level": "WARNING",
         }
     })

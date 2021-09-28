@@ -43,7 +43,6 @@ def make_eval_local(hamil: Hamiltonian, prop: Propagator):
 
     vapply = jax.vmap(prop.apply, in_axes=(None, 0))
 
-    @jax.jit
     def eval_local(params, fields):
         r"""evaluate the local energy, sign and log-overlap of the bra and ket.
 
@@ -93,7 +92,6 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 1
     eval_local = make_eval_local(hamil, prop)
     batch_eval = jax.vmap(eval_local, in_axes=(None, 0))
         
-    @jax.jit
     def eval_total(params, data):
         r"""evaluate the total energy and the auxiliary estimations from batched data.
 
