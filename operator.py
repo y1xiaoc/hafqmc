@@ -54,11 +54,13 @@ class AuxFieldNet(AuxField):
         self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, kernel_init=last_init, 
                                    bias_init=partial(nn.zeros, dtype=self.dtype))
         if self.hidden_sizes:
+            inner_init = nn.initializers.orthogonal(
+                scale=0.01, column_axis=-1, dtype=_t_real)
             self.network = Serial(
                 [nn.Dense(
                     ls if ls and ls > 0 else nhs, 
                     dtype = _t_real,
-                    kernel_init = nn.initializers.lecun_normal(dtype=_t_real),
+                    kernel_init = inner_init,
                     bias_init = partial(nn.zeros, dtype=_t_real)) 
                  for ls in self.hidden_sizes],
                 skip_cxn = True,
@@ -74,4 +76,4 @@ class AuxFieldNet(AuxField):
         fields = fields[:self.nhs] + tmp[:-1]
         vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
         log_weight = - 0.5 * (fields.conj() @ fields) - tmp[-1]
-        return make_hermite(vhs_sum), log_weight
+        return make_hermite(vhs_sum), log_weight.real

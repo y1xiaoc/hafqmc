@@ -48,7 +48,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
     def step(key, params, mc_state, opt_state):
         mc_state, data = mc_sampler.sample(key, params, mc_state)
         (loss, aux), grads = loss_and_grad(params, data)
-        updates, opt_state = optimizer.update(grads, opt_state)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         mc_state = mc_sampler.refresh(mc_state, params)
         return (params, mc_state, opt_state), (loss, aux)
@@ -75,6 +75,10 @@ def train(cfg: ConfigDict):
         logging.warning("Sample size not divisible by batch size, rounding up")
     batch_multi = -(-sample_size // batch_size)
     sample_size = batch_size * batch_multi
+    eval_size = cfg.optim.batch if cfg.optim.batch is not None else batch_size
+    if sample_size % eval_size != 0:
+        logging.warning("Eval batch size not dividing sample size, using sample batch size")
+        eval_size = batch_size
 
     # do the scf calculation as init guess
     logging.info("Building molecule and doing HF calculation")
@@ -89,11 +93,11 @@ def train(cfg: ConfigDict):
     propagator = Propagator.create(hamiltonian, init_wfn, **cfg.propagator)
     sampler_1s = make_sampler(propagator, 
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
-    mc_sampler = make_multistep(sampler_1s, batch_multi, concat=False)
+    mc_sampler = make_multistep(sampler_1s, batch_multi, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
-    expect_fn = make_eval_total(hamiltonian, propagator, default_batch=batch_size)
+    expect_fn = make_eval_total(hamiltonian, propagator, default_batch=eval_size)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 

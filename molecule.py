@@ -71,8 +71,8 @@ def initwfn_from_scf(mf, orth_ao=None):
         mf.run()
     X = get_orth_ao(mf, orth_ao)
     if mf.mo_coeff.ndim == 3:
-        mo_a = mf.mo_coeff[0, :, mf.mo_occ[0] > 0]
-        mo_b = mf.mo_coeff[1, :, mf.mo_occ[1] > 0]
+        mo_a = mf.mo_coeff[0][:, mf.mo_occ[0] > 0]
+        mo_b = mf.mo_coeff[1][:, mf.mo_occ[1] > 0]
     else:
         mo_a = mf.mo_coeff[:, mf.mo_occ > 0]
         mo_b = mf.mo_coeff[:, mf.mo_occ > 0]
@@ -84,5 +84,5 @@ def build_mf(verbose=0, **mol_args):
     from pyscf import gto
     scf_args = mol_args.pop("scf", {})
     mol = gto.M(dump_input=False, parse_arg=False, verbose=verbose, **mol_args)
-    mf = mol.HF().set(**scf_args).run()
+    mf = mol.UHF().set(**scf_args).run()
     return mf

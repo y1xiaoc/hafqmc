@@ -14,7 +14,7 @@ def default() -> ConfigDict:
             "max_nhs": None,
             "init_tsteps": [0.01]*10,
             "extra_field": 0,
-            "parametrize": True,
+            "parametrize": "all",
             "timevarying": "hmf",
             "aux_network": {
                 "hidden_sizes": [-1, -1, -1],
@@ -39,9 +39,10 @@ def default() -> ConfigDict:
             "sign_power": 2.,
         },
         "optim": {
+            "batch": None,
             "iteration": 10_000,
             "optimizer": "adam", # {"name": "adam"},
-            "grad_clip": 1.,
+            "grad_clip": None,
             "lr": {
                 "start" : 1e-4,
                 "delay" : 1e3,
