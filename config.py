@@ -3,8 +3,13 @@ from ml_collections import ConfigDict, config_dict
 
 def default() -> ConfigDict:
     return ConfigDict({
-        "seed": config_dict.placeholder(int, required=True),
-        "molecule": config_dict.placeholder(dict, required=True),
+        "restart": {
+            "hamiltonian": None,
+            "params": None,
+            "states": None,
+        },
+        "seed": config_dict.placeholder(int),
+        "molecule": config_dict.placeholder(dict),
         "hamiltonian": {
             "chol_cut": 1e-6,
             "orth_ao": None,
@@ -55,6 +60,7 @@ def default() -> ConfigDict:
             "ckpt_freq": 100,
             "ckpt_path": "checkpoint.pkl",
             "hpar_path": "hparams.yml",
+            "hamil_path": "hamiltonian.pkl",
             "level": "WARNING",
         }
     })

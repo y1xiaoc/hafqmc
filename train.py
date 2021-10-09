@@ -13,7 +13,7 @@ from .hamiltonian import Hamiltonian
 from .propagator import Propagator
 from .estimator import make_eval_total
 from .sampler import get_shape, make_sampler, make_multistep
-from .utils import ensure_mapping, save_pickle
+from .utils import ensure_mapping, save_pickle, load_pickle
 
 
 def sign_penalty(s, factor=1., target=1., power=2.):
@@ -67,7 +67,6 @@ def train(cfg: ConfigDict):
             print(cfg, file=hpfile)
 
     # get the constants
-    key = jax.random.PRNGKey(cfg.seed)
     total_iter = cfg.optim.iteration
     sample_size = cfg.sample.size
     batch_size = cfg.sample.batch
@@ -80,16 +79,24 @@ def train(cfg: ConfigDict):
         logging.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_size = batch_size
 
-    # do the scf calculation as init guess
-    logging.info("Building molecule and doing HF calculation")
-    mf = build_mf(**cfg.molecule)
-    print(f"# HF energy from pyscf calculation: {mf.e_tot}")
-    if not mf.converged:
-        logging.warning("HF calculation does not converge!")
+    # set up the hamiltonian
+    if cfg.restart.hamiltonian is None:
+        logging.info("Building molecule and doing HF calculation to get Hamiltonian")
+        mf = build_mf(**cfg.molecule)
+        print(f"# HF energy from pyscf calculation: {mf.e_tot}")
+        if not mf.converged:
+            logging.warning("HF calculation does not converge!")
+        hamiltonian, init_wfn = Hamiltonian.from_pyscf_with_wfn(mf, **cfg.hamiltonian)
+        save_pickle(cfg.log.hamil_path, 
+            (hamiltonian.h1e, hamiltonian.ceri, hamiltonian.enuc, init_wfn))
+    else:
+        logging.info("Loading Hamiltonian from saved file")
+        h1e, ceri, enuc, init_wfn = load_pickle(cfg.restart.hamiltonian)
+        hamiltonian = Hamiltonian(h1e, ceri, enuc, cfg.hamiltonian.full_eri)
+        print(f"# HF energy from loaded: {hamiltonian.local_energy(init_wfn, init_wfn)}")
 
-    # set up all classes and functions
+    # set up all other classes and functions
     logging.info("Setting up the training loop")
-    hamiltonian, init_wfn = Hamiltonian.from_pyscf_with_wfn(mf, **cfg.hamiltonian)
     propagator = Propagator.create(hamiltonian, init_wfn, **cfg.propagator)
     sampler_1s = make_sampler(propagator, 
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
@@ -106,17 +113,28 @@ def train(cfg: ConfigDict):
     train_step = jax.jit(train_step)
     
     # set up all states
-    logging.info("Initializing parameters and states")
-    key, pakey, mckey = jax.random.split(key, 3)
-    field_shape = get_shape(propagator)
-    params = propagator.init(pakey, jnp.zeros(field_shape[-2:]))
-    mc_state = mc_sampler.init(mckey, params, batch_size)
-    opt_state = optimizer.init(params)
-    if cfg.sample.burn_in > 0:
-        logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
-        for ii in range(cfg.sample.burn_in):
-            key, subkey = jax.random.split(key)
-            mc_state, _ = jax.jit(sampler_1s.sample)(subkey, params, mc_state)
+    if cfg.restart.states is None:
+        logging.info("Initializing parameters and states")
+        key = jax.random.PRNGKey(cfg.seed)
+        key, pakey, mckey = jax.random.split(key, 3)
+        field_shape = get_shape(propagator)
+        if cfg.restart.params is None:
+            params = propagator.init(pakey, jnp.zeros(field_shape[-2:]))
+        else:
+            logging.info("Loading parameters from saved file")
+            params = load_pickle(cfg.restart.params)
+            if isinstance(params, tuple): 
+                params = params[1]
+        mc_state = mc_sampler.init(mckey, params, batch_size)
+        opt_state = optimizer.init(params)
+        if cfg.sample.burn_in > 0:
+            logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
+            for ii in range(cfg.sample.burn_in):
+                key, subkey = jax.random.split(key)
+                mc_state, _ = jax.jit(sampler_1s.sample)(subkey, params, mc_state)
+    else:
+        logging.info("Loading parameters and states from saved file")
+        key, params, mc_state, opt_state = load_pickle(cfg.restart.states)
 
     # the actual training iteration
     logging.info("Start training")
