@@ -11,11 +11,13 @@ from .utils import fix_init, make_hermite, Serial
 class OneBody(nn.Module):
     init_hmf : jnp.ndarray
     parametrize : bool = False
+    init_random : float = 0.
     dtype: Optional[jnp.dtype] = None
     
     def setup(self):
         if self.parametrize:
-            self.hmf = self.param("hmf", fix_init, self.init_hmf, self.dtype)
+            self.hmf = self.param("hmf", fix_init, 
+                self.init_hmf, self.dtype, self.init_random)
         else:
             self.hmf = self.init_hmf
 
@@ -26,11 +28,13 @@ class OneBody(nn.Module):
 class AuxField(nn.Module):
     init_vhs : jnp.ndarray
     parametrize : bool = False
+    init_random : float = 0.
     dtype: Optional[jnp.dtype] = None
 
     def setup(self):
         if self.parametrize:
-            self.vhs = self.param("vhs", fix_init, self.init_vhs, self.dtype)
+            self.vhs = self.param("vhs", fix_init, 
+                self.init_vhs, self.dtype, self.init_random)
         else:
             self.vhs = self.init_vhs
         self.nhs = self.init_vhs.shape[0]

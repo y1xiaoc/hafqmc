@@ -20,21 +20,22 @@ class Propagator(nn.Module):
     init_enuc : float
     init_wfn : Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]
     init_tsteps : Sequence[float]
+    init_random : float = 0.
     extra_field : int = 0
-    parametrize : Union[bool, str, Sequence[int]] = True
-    timevarying : Union[bool, str, Sequence[int]] = False
+    parametrize : Union[bool, str, Sequence[str]] = True
+    timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     use_complex : bool = False
 
     @classmethod
     def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
-               max_nhs=None, extra_field=0, 
+               max_nhs=None, init_random=0., extra_field=0, 
                parametrize=True, timevarying=False, 
                aux_network=None, use_complex=False):
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
-        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, 
+        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, init_random,
                    extra_field, parametrize, timevarying, aux_network, use_complex)
 
     def setup(self):
@@ -55,7 +56,7 @@ class Propagator(nn.Module):
 
         # concat the spin of wavefunctions to make it an array
         _wfn_packed, self.nelec = pack_spin(self.init_wfn)  
-        self.wfn_packed = (self.param("wfn", fix_init, _wfn_packed, _dtype) 
+        self.wfn_packed = (self.param("wfn", fix_init, _wfn_packed, _dtype, self.init_random) 
                            if _pd["wfn"] else _wfn_packed)
         self.nbasis = self.wfn_packed.shape[0]
         # core energy, should be useless
@@ -64,7 +65,7 @@ class Propagator(nn.Module):
 
         # build Hmf operator, can be vmapped to eval all the timesteps at the same time
         if _pd["hmf"] and not _vd["hmf"]:
-            _hmf = self.param("hmf", fix_init, self.init_hmf, _dtype)
+            _hmf = self.param("hmf", fix_init, self.init_hmf, _dtype, self.init_random)
         else:
             _hmf = self.init_hmf
         if _pd["hmf"] and _vd["hmf"]:
@@ -77,13 +78,15 @@ class Propagator(nn.Module):
                 split_rngs={'params': True})
         else:
             OneBodyCls = OneBody
-        self.hmf_ops = OneBodyCls(_hmf, 
-                                  parametrize=_pd["hmf"] and _vd["hmf"], 
-                                  dtype=_dtype)
+        self.hmf_ops = OneBodyCls(
+            _hmf, 
+            parametrize=_pd["hmf"] and _vd["hmf"], 
+            init_random=self.init_random,
+            dtype=_dtype)
 
         # build Vhs operator, vmapped to eval all timesteps with fields shape [nts_v, nsite]
         if _pd["vhs"] and not _vd["vhs"]:
-            _vhs = self.param("vhs", fix_init, self.init_vhs, _dtype)
+            _vhs = self.param("vhs", fix_init, self.init_vhs, _dtype, self.init_random)
         else:
             _vhs = self.init_vhs
         self.nsite = _vhs.shape[0]
@@ -103,6 +106,7 @@ class Propagator(nn.Module):
         self.vhs_ops = AuxFieldCls(
             _vhs,
             parametrize=_pd["vhs"] and _vd["vhs"],
+            init_random=self.init_random,
             dtype=_dtype,
             **network_args)
 
