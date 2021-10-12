@@ -188,11 +188,12 @@ class Hamiltonian(object):
         hmf_raw = self.h1e - 0.5 * calc_v0(eri)
         vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
         rdm_t = calc_rdm(trial, trial)
-        if rdm_t.ndim == 3: rdm_t = rdm_t.sum(0)
+        if rdm_t.ndim == 3:
+            rdm_t = rdm_t.sum(0)
         vbar = jnp.einsum("kpq,pq->k", vhs_raw, rdm_t)
         enuc = self.enuc - 0.5 * (vbar**2).sum()
         hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
-        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1])
+        vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1]) / rdm_t.trace()
         return hmf, vhs, enuc
 
     @classmethod

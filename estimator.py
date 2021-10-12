@@ -70,7 +70,8 @@ def make_eval_local(hamil: Hamiltonian, prop: Propagator):
     return eval_local
 
 
-def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 100):
+def make_eval_total(hamil: Hamiltonian, prop: Propagator, 
+                    default_batch: int = 100, calc_vars: bool = False):
     """Create a function that evaluates the total energy from a batch of field configurations.
 
     Args:
@@ -125,14 +126,18 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator, default_batch: int = 1
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
         logov = logov.real # make sure the dtype is real
-        rel_w = (lax.stop_gradient(relative_weight(logov, logsw))
-                 if logsw is not None else 1.)
-        exp_es = expect_unnorm((eloc * sign).real * rel_w, logov)
-        exp_s = expect_unnorm(sign.real * rel_w, logov)
-        etot = exp_es / exp_s
+        rel_w = (lax.stop_gradient(relative_weight(logov, logsw, normalize=True))
+                 if logsw is not None else 1.) / eloc.size
+        exp_es = expect_unnorm((eloc * sign) * rel_w, logov) 
+        exp_s = expect_unnorm(sign * rel_w, logov)
+        etot = exp_es.real / exp_s.real
         aux_data = {"e_tot": etot, 
-                    "exp_es": exp_es / eloc.size, 
-                    "exp_s": exp_s / eloc.size}
+                    "exp_es": exp_es.real, 
+                    "exp_s": exp_s.real}
+        if calc_vars:
+            var_es = expect_unnorm(jnp.abs(eloc * sign - exp_es)**2 * rel_w, logov)
+            var_s = expect_unnorm(jnp.abs(sign - exp_s)**2 * rel_w, logov)
+            aux_data.update(var_es=var_es, var_s=var_s)
         return etot, aux_data
             
     return eval_total

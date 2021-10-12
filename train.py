@@ -13,11 +13,14 @@ from .hamiltonian import Hamiltonian
 from .propagator import Propagator
 from .estimator import make_eval_total
 from .sampler import get_shape, make_sampler, make_multistep
-from .utils import ensure_mapping, save_pickle, load_pickle
+from .utils import ensure_mapping, save_pickle, load_pickle, Printer
 
 
-def sign_penalty(s, factor=1., target=1., power=2.):
+def lower_penalty(s, factor=1., target=1., power=2.):
     return factor * jnp.maximum(target - s, 0) ** power
+
+def upper_penalty(s, factor=1., target=1., power=2.):
+    return factor * jnp.maximum(s - target, 0) ** power
 
 
 def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
@@ -32,13 +35,20 @@ def make_lr_schedule(start=1e-4, delay=1e4, decay=1.):
     return lambda t: start * jnp.power((1.0 / (1.0 + (t/delay))), decay)
 
 
-def make_loss(expect_fn, sign_factor=1., sign_target=1., sign_power=2.):
+def make_loss(expect_fn, 
+              sign_factor=1., sign_target=1., sign_power=2.,
+              var_factor=1., var_target=1., var_power=2):
 
     def loss(params, data):
         e_tot, aux = expect_fn(params, data)
-        exp_s = aux["exp_s"]
-        sp = sign_penalty(exp_s, sign_factor, sign_target, sign_power)
-        return e_tot + sp, aux
+        loss = e_tot
+        if sign_factor > 0:
+            exp_s = aux["exp_s"]
+            loss += lower_penalty(exp_s, sign_factor, sign_target, sign_power)
+        if var_factor > 0:
+            var_es = aux["var_es"]
+            loss += upper_penalty(var_es, var_factor, var_target, var_power)
+        return loss, aux
          
     return loss
 
@@ -62,6 +72,11 @@ def train(cfg: ConfigDict):
     logging.basicConfig(level=numeric_level,
         format='# [%(asctime)s] %(levelname)s: %(message)s')
     writer = SummaryWriter(cfg.log.stat_path)
+    print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
+                    "exp_es": ".4f", "exp_s": ".4f"}
+    if cfg.loss.var_factor > 0:
+        print_fields.update({"var_es": ".4f", "var_s": ".4f"})
+    printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
             print(cfg, file=hpfile)
@@ -104,7 +119,8 @@ def train(cfg: ConfigDict):
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
-    expect_fn = make_eval_total(hamiltonian, propagator, default_batch=eval_size)
+    expect_fn = make_eval_total(hamiltonian, propagator, 
+        default_batch=eval_size, calc_vars=cfg.loss.var_factor > 0)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
@@ -138,16 +154,15 @@ def train(cfg: ConfigDict):
 
     # the actual training iteration
     logging.info("Start training")
-    print("# step\tloss\te_tot\texp_es\texp_s\ttime")
-    for ii in range(total_iter):
-        tic = time.time()
+    printer.print_header(prefix="# ")
+    for ii in range(total_iter + 1):
+        printer.reset_timer()
         key, subkey = jax.random.split(key)
         (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
 
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
-            print(f"{ii}\t{loss:.4f}\t{aux['e_tot']:.4f}\t"
-                  f"{aux['exp_es']:.4f}\t{aux['exp_s']:.4f}\t{time.time()-tic:.4f}")
+            printer.print_fields({"step": ii, "loss": loss, **aux})
             writer.add_scalars("stat", {"loss": loss, **aux}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
             save_pickle(cfg.log.ckpt_path, (key, params, mc_state, opt_state))

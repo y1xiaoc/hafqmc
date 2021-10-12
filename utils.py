@@ -3,10 +3,11 @@ from jax import lax
 from jax import numpy as jnp
 from jax import scipy as jsp
 from flax import linen as nn
-from typing import Sequence, Union, Callable, Any
+from typing import Dict, Sequence, Union, Callable, Any, Optional
 from functools import partial
 import dataclasses
 import pickle
+import time
 
 
 _t_real = jnp.float64
@@ -187,3 +188,28 @@ class Serial(nn.Module):
             else:
                 x = tmp
         return x
+
+
+class Printer:
+
+    def __init__(self, 
+                 field_format: Dict[str, Optional[str]], 
+                 time_format: Optional[str]=None,
+                 **print_kwargs):
+        all_format = {**field_format, "time": time_format}
+        all_format = {k: v for k, v in all_format.items() if v is not None}
+        self.fields = all_format
+        self.header = "\t".join(self.fields.keys())
+        self.format = "\t".join(f"{{{k}:{v}}}" for k, v in self.fields.items())
+        self.kwargs = print_kwargs
+        self.tick = time.perf_counter()
+
+    def print_header(self, prefix: str = ""):
+        print(prefix+self.header, **self.kwargs)
+
+    def print_fields(self, field_dict: Dict[str, Any], prefix: str = ""):
+        output = self.format.format(**field_dict, time=time.perf_counter()-self.tick)
+        print(prefix+output, **self.kwargs)
+
+    def reset_timer(self):
+        self.tick = time.perf_counter()
