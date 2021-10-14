@@ -117,8 +117,8 @@ class Propagator(nn.Module):
         # may add a constant shift to the log weight
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
         # scale by the time step in advance, cmult is just complex number multiply
-        hmf_steps = cmult(self.ts_h.reshape(self.nts_h, 1, 1), all_hmf)
-        vhs_steps = cmult(jnp.sqrt(-self.ts_v+0j).reshape(self.nts_v, 1, 1), all_vhs)
+        hmf_steps = cmult(-self.ts_h[..., None, None], all_hmf)
+        vhs_steps = cmult(jnp.sqrt(-self.ts_v+0j)[..., None, None], all_vhs)
         # take out the trace to help expm_apply converge
         hmf_tr = jnp.trace(hmf_steps, 0, -1, -2) / self.nbasis
         hmf_steps = hmf_steps - hmf_tr[..., None, None] * jnp.identity(self.nbasis)
