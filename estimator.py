@@ -71,7 +71,7 @@ def make_eval_local(hamil: Hamiltonian, prop: Propagator):
 
 
 def make_eval_total(hamil: Hamiltonian, prop: Propagator, 
-                    default_batch: int = 100, calc_vars: bool = False):
+                    default_batch: int = 100, calc_stds: bool = False):
     """Create a function that evaluates the total energy from a batch of field configurations.
 
     Args:
@@ -134,10 +134,10 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
         aux_data = {"e_tot": etot, 
                     "exp_es": exp_es.real, 
                     "exp_s": exp_s.real}
-        if calc_vars:
+        if calc_stds:
             var_es = expect_unnorm(jnp.abs(eloc * sign - exp_es)**2 * rel_w, logov)
             var_s = expect_unnorm(jnp.abs(sign - exp_s)**2 * rel_w, logov)
-            aux_data.update(var_es=var_es, var_s=var_s)
+            aux_data.update(std_es=jnp.sqrt(var_es), std_s=jnp.sqrt(var_s))
         return etot, aux_data
             
     return eval_total

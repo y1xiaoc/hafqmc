@@ -42,9 +42,9 @@ def default() -> ConfigDict:
             "sign_factor": 1.,
             "sign_target": 0.5,
             "sign_power": 2.,
-            "var_factor": 0.,
-            "var_target": 0.5,
-            "var_power": 2.,
+            "std_factor": 0.,
+            "std_target": 1.,
+            "std_power": 2.,
         },
         "optim": {
             "batch": None,

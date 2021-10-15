@@ -31,13 +31,15 @@ def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
     return opt
 
 
-def make_lr_schedule(start=1e-4, delay=1e4, decay=1.):
+def make_lr_schedule(start=1e-4, decay=1., delay=1e4):
+    if decay is None:
+        return start
     return lambda t: start * jnp.power((1.0 / (1.0 + (t/delay))), decay)
 
 
 def make_loss(expect_fn, 
               sign_factor=1., sign_target=1., sign_power=2.,
-              var_factor=1., var_target=1., var_power=2):
+              std_factor=1., std_target=1., std_power=2):
 
     def loss(params, data):
         e_tot, aux = expect_fn(params, data)
@@ -45,9 +47,9 @@ def make_loss(expect_fn,
         if sign_factor > 0:
             exp_s = aux["exp_s"]
             loss += lower_penalty(exp_s, sign_factor, sign_target, sign_power)
-        if var_factor > 0:
-            var_es = aux["var_es"]
-            loss += upper_penalty(var_es, var_factor, var_target, var_power)
+        if std_factor > 0:
+            std_es = aux["std_es"]
+            loss += upper_penalty(std_es, std_factor, std_target, std_power)
         return loss, aux
          
     return loss
@@ -74,8 +76,8 @@ def train(cfg: ConfigDict):
     writer = SummaryWriter(cfg.log.stat_path)
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
                     "exp_es": ".4f", "exp_s": ".4f"}
-    if cfg.loss.var_factor > 0:
-        print_fields.update({"var_es": ".4f", "var_s": ".4f"})
+    if cfg.loss.std_factor > 0:
+        print_fields.update({"std_es": ".4f", "std_s": ".4f"})
     printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
@@ -120,7 +122,7 @@ def train(cfg: ConfigDict):
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, propagator, 
-        default_batch=eval_size, calc_vars=cfg.loss.var_factor > 0)
+        default_batch=eval_size, calc_stds=cfg.loss.std_factor > 0)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
