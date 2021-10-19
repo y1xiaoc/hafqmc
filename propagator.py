@@ -26,17 +26,18 @@ class Propagator(nn.Module):
     timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     use_complex : bool = False
+    sqrt_tsvpar : bool = False
 
     @classmethod
     def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
                max_nhs=None, init_random=0., extra_field=0, 
                parametrize=True, timevarying=False, 
-               aux_network=None, use_complex=False):
+               aux_network=None, use_complex=False, sqrt_tsvpar=False):
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
         return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, init_random,
-                   extra_field, parametrize, timevarying, aux_network, use_complex)
+                   extra_field, parametrize, timevarying, aux_network, use_complex, sqrt_tsvpar)
 
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
@@ -47,6 +48,8 @@ class Propagator(nn.Module):
         # handle the time steps, for Hmf and Vhs separately
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
+        if self.sqrt_tsvpar:
+            _ts_v = jnp.sqrt(jnp.abs(_ts_v))
         self.ts_v = (self.param("ts_v", fix_init, _ts_v, _dtype) 
                      if _pd["tsteps"] else _ts_v)
         self.ts_h = (self.param("ts_h", fix_init, _ts_h, _dtype) 
@@ -118,7 +121,8 @@ class Propagator(nn.Module):
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
         # scale by the time step in advance, cmult is just complex number multiply
         hmf_steps = cmult(-jnp.abs(self.ts_h)[..., None, None], all_hmf)
-        vhs_steps = cmult(1j*jnp.sqrt(jnp.abs(self.ts_v))[..., None, None], all_vhs)
+        _ts_v = self.ts_v if self.sqrt_tsvpar else jnp.sqrt(jnp.abs(self.ts_v))
+        vhs_steps = cmult(1j * _ts_v[..., None, None], all_vhs)
         # take out the trace to help expm_apply converge
         hmf_tr = jnp.trace(hmf_steps, 0, -1, -2) / self.nbasis
         hmf_steps = hmf_steps - hmf_tr[..., None, None] * jnp.identity(self.nbasis)

@@ -27,6 +27,7 @@ def default() -> ConfigDict:
                 "zero_init": True,
             },
             "use_complex" : False,
+            "sqrt_tsvpar" : False,
         },
         "sample": {
             "size": 10_000,
