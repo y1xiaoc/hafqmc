@@ -59,7 +59,7 @@ class AuxFieldNet(AuxField):
                                    bias_init=partial(nn.zeros, dtype=self.dtype))
         if self.hidden_sizes:
             inner_init = nn.initializers.orthogonal(
-                scale=0.01, column_axis=-1, dtype=_t_real)
+                scale=1., column_axis=-1, dtype=_t_real)
             self.network = Serial(
                 [nn.Dense(
                     ls if ls and ls > 0 else nhs, 

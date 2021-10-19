@@ -66,4 +66,5 @@ def default() -> ConfigDict:
             "hamil_path": "hamiltonian.pkl",
             "level": "WARNING",
         }
-    })
+    }, 
+    type_safe=False, convert_dict=True)

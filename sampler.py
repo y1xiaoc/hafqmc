@@ -63,12 +63,18 @@ def make_sampler(prop: Propagator, name: str, **kwargs):
     return maker(prop, **kwargs)
 
 
-def make_gaussian(prop: Propagator, mu=0., sigma=1.):
+def make_gaussian(prop: Propagator, mu=0., sigma=1., truncate=None):
     sample_shape = get_shape(prop)
 
     def sample(key, params, state):
         nbatch = state.shape[0]
-        new_fields = jax.random.normal(key, (nbatch, *sample_shape)) * sigma + mu
+        shape = (nbatch, *sample_shape)
+        if truncate is not None:
+            trc = jnp.abs(truncate)
+            rawgs = jax.random.truncated_normal(key, -trc, trc, shape)
+        else:
+            rawgs = jax.random.normal(key, shape)
+        new_fields = rawgs * sigma + mu
         new_logdens = log_dens_gaussian(new_fields, mu, sigma).sum((-1,-2,-3))
         return state, (new_fields, new_logdens)
     
@@ -81,15 +87,16 @@ def make_gaussian(prop: Propagator, mu=0., sigma=1.):
     return MCSampler(sample, init, refresh)
 
 
-def make_metropolis(prop: Propagator, sigma=0.05, steps=5):
+def make_metropolis(prop: Propagator, beta=1., sigma=0.05, steps=5):
     sample_shape = get_shape(prop)
-    logdens_fn = jax.vmap(prop.sign_logov, in_axes=(None, 0))
+    raw_logdens_fn = lambda p, x: beta * prop.sign_logov(p, x)[1]
+    logdens_fn = jax.vmap(raw_logdens_fn, in_axes=(None, 0))
 
     def step(key, params, state):
         x1, ld1 = state
         gkey, ukey = jax.random.split(key)
         x2 = x1 + sigma * jax.random.normal(gkey, shape=x1.shape)
-        sign2, ld2 = logdens_fn(params, x2)
+        ld2 = logdens_fn(params, x2)
         ratio = ld2 - ld1
         rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
         cond = ratio > rnd
@@ -107,12 +114,12 @@ def make_metropolis(prop: Propagator, sigma=0.05, steps=5):
     def init(key, params, batch_size):
         sigma, mu = 1., 0.
         fields = jax.random.normal(key, (batch_size, *sample_shape)) * sigma + mu
-        sign, logdens = logdens_fn(params, fields)
+        logdens = logdens_fn(params, fields)
         return (fields, logdens)
 
     def refresh(state, params):
         fields, ld_old = state
-        sign_new, ld_new = logdens_fn(params, fields)
+        ld_new = logdens_fn(params, fields)
         return (fields, ld_new)
 
     return MCSampler(sample, init, refresh)
