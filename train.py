@@ -66,6 +66,16 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
         return (params, mc_state, opt_state), (loss, aux)
 
     return step
+
+
+def make_evaluation_step(expect_fn, mc_sampler):
+    
+    def step(key, params, mc_state, extras=None):
+        mc_state, data = mc_sampler.sample(key, params, mc_state)
+        e_tot, aux = expect_fn(params, data)
+        return (params, mc_state, extras), (e_tot, aux)
+    
+    return step
         
 
 def train(cfg: ConfigDict):
@@ -122,12 +132,15 @@ def train(cfg: ConfigDict):
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, propagator, 
-        default_batch=eval_size, calc_stds=cfg.loss.std_factor > 0)
+        default_batch=eval_size, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
     # the core training iteration, to be pmaped
-    train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
+    if cfg.optim.lr.start > 0:
+        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
+    else:
+        train_step = make_evaluation_step(expect_fn, mc_sampler)
     train_step = jax.jit(train_step)
     
     # set up all states
