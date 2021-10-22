@@ -123,14 +123,6 @@ class Propagator(nn.Module):
         hmf_steps = cmult(-jnp.abs(self.ts_h)[..., None, None], all_hmf)
         _ts_v = self.ts_v if self.sqrt_tsvpar else jnp.sqrt(jnp.abs(self.ts_v))
         vhs_steps = cmult(1j * _ts_v[..., None, None], all_vhs)
-        # take out the trace to help expm_apply converge
-        hmf_tr = jnp.trace(hmf_steps, 0, -1, -2) / self.nbasis
-        hmf_steps = hmf_steps - hmf_tr[..., None, None] * jnp.identity(self.nbasis)
-        vhs_tr = jnp.trace(vhs_steps, 0, -1, -2) / self.nbasis
-        vhs_steps = vhs_steps - vhs_tr[..., None, None] * jnp.identity(self.nbasis)
-        # put real part of the trace into log weight
-        sum_tr = hmf_tr.sum() + vhs_tr.sum()
-        log_weight = log_weight + sum_tr.real
         # iteratively apply the projection step
         ####### begin naive for loop version #######
         # wfn = self.wfn_packed+0j
@@ -145,8 +137,6 @@ class Propagator(nn.Module):
             return wfn, None
         wfn, _ = lax.scan(app_ops, self.wfn_packed+0j, (hmf_steps[:-1], vhs_steps))
         wfn = expm_apply(hmf_steps[-1], wfn)
-        # add the imag part of the trace
-        wfn = wfn * jnp.exp(sum_tr.imag * 1j)
         # split different spin part
         wfn = unpack_spin(wfn, self.nelec)
         # return both the wave function matrix and the log of scalar part
