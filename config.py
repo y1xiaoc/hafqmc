@@ -18,6 +18,7 @@ def default() -> ConfigDict:
         "propagator":{
             "max_nhs": None,
             "init_tsteps": [0.01]*10,
+            "ortho_intvl": 0,
             "extra_field": 0,
             "parametrize": "all",
             "timevarying": "hmf",
@@ -26,8 +27,9 @@ def default() -> ConfigDict:
                 "actv_fun": "gelu",
                 "zero_init": True,
             },
-            "use_complex" : False,
-            "sqrt_tsvpar" : False,
+            "init_random": 0.,
+            "use_complex": False,
+            "sqrt_tsvpar": False,
         },
         "sample": {
             "size": 10_000,
@@ -53,9 +55,9 @@ def default() -> ConfigDict:
             "optimizer": "adam", # {"name": "adam"},
             "grad_clip": None,
             "lr": {
-                "start" : 1e-4,
-                "delay" : 1e3,
-                "decay" : 1.0,
+                "start": 1e-4,
+                "delay": 1e3,
+                "decay": 1.0,
             },
         },
         "log": {

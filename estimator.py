@@ -80,7 +80,7 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
         prop (Propagator): 
             the propagator ansatz that generate a Slater determinant from aux fields.
         default_batch (int, optional): 
-            the batch size to use if there is no pre-spiltted batch in the data. Defaults to 10.
+            the batch size to use if there is no pre-spiltted batch in the data. Defaults to 100.
 
     Returns:
         eval_total (callable): 

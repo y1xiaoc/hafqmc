@@ -20,24 +20,22 @@ class Propagator(nn.Module):
     init_enuc : float
     init_wfn : Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]
     init_tsteps : Sequence[float]
-    init_random : float = 0.
+    ortho_intvl : int = 0
     extra_field : int = 0
     parametrize : Union[bool, str, Sequence[str]] = True
     timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
+    init_random : float = 0.
     use_complex : bool = False
     sqrt_tsvpar : bool = False
 
     @classmethod
     def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
-               max_nhs=None, init_random=0., extra_field=0, 
-               parametrize=True, timevarying=False, 
-               aux_network=None, use_complex=False, sqrt_tsvpar=False):
+               max_nhs=None, **init_kwargs):
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
-        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, init_random,
-                   extra_field, parametrize, timevarying, aux_network, use_complex, sqrt_tsvpar)
+        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, **init_kwargs)
 
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
@@ -131,12 +129,22 @@ class Propagator(nn.Module):
         #     wfn = expm_apply(vhs_steps[its], wfn)
         # wfn = expm_apply(hmf_steps[-1], wfn)
         ######## end naive for loop version ########
-        def app_ops(wfn, ops):
+        def app_ops(wfn, i_ops):
+            ii, *ops = i_ops
             for op in ops:
                 wfn = expm_apply(op, wfn)
-            return wfn, None
-        wfn, _ = lax.scan(app_ops, self.wfn_packed+0j, (hmf_steps[:-1], vhs_steps))
+            if self.ortho_intvl <= 0:
+                return wfn, 0.
+            return lax.cond(
+                (ii+1) % self.ortho_intvl == 0,
+                lambda w: orthonormalize(w, self.nelec),
+                lambda w: (w, 0.),
+                wfn) # orthonormalize for every these steps
+        wfn, logd = lax.scan(app_ops, self.wfn_packed+0j, 
+            (jnp.arange(self.nts_v), hmf_steps[:-1], vhs_steps))
         wfn = expm_apply(hmf_steps[-1], wfn)
+        # recover the normalizing factor during qr
+        log_weight += logd.sum()
         # split different spin part
         wfn = unpack_spin(wfn, self.nelec)
         # return both the wave function matrix and the log of scalar part
@@ -151,3 +159,25 @@ class Propagator(nn.Module):
         ket, ket_lw = jax.tree_map(lambda x: x[1], res)
         sign, logov = calc_slov(bra, ket)
         return sign, logov + bra_lw + ket_lw
+
+
+def orthonormalize_ns(wfn):
+    owfn, rmat = jnp.linalg.qr(wfn)
+    rdiag = rmat.diagonal(0,-1,-2)
+    rabs = jnp.abs(rdiag)
+    owfn *= rdiag / rabs
+    logd = jnp.sum(jnp.log(rabs), axis=-1)
+    return owfn, logd
+
+
+def orthonormalize(wfn, nelec=None):
+    if isinstance(wfn, tuple):
+        wa, wb = wfn
+        owa, lda = orthonormalize_ns(wa)
+        owb, ldb = orthonormalize_ns(wb)
+        return (owa, owb), (lda + ldb)
+    elif nelec is not None:
+        owfn, logd = orthonormalize(unpack_spin(wfn, nelec))
+        return pack_spin(owfn)[0], logd
+    else:
+        return orthonormalize_ns(wfn)
