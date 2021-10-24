@@ -9,7 +9,7 @@ def default() -> ConfigDict:
             "states": None,
         },
         "seed": config_dict.placeholder(int),
-        "molecule": config_dict.placeholder(dict),
+        "molecule": {},
         "hamiltonian": {
             "chol_cut": 1e-6,
             "orth_ao": None,
