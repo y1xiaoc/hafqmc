@@ -181,5 +181,6 @@ def train(cfg: ConfigDict):
             writer.add_scalars("stat", {"loss": loss, **aux}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
             save_pickle(cfg.log.ckpt_path, (key, params, mc_state, opt_state))
+    writer.close()
     
     return params, mc_state, opt_state
