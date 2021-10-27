@@ -12,6 +12,7 @@ class OneBody(nn.Module):
     init_hmf : jnp.ndarray
     parametrize : bool = False
     init_random : float = 0.
+    hermite_out : bool = True
     dtype: Optional[jnp.dtype] = None
     
     def setup(self):
@@ -22,13 +23,17 @@ class OneBody(nn.Module):
             self.hmf = self.init_hmf
 
     def __call__(self):
-        return make_hermite(self.hmf)
+        hmf = self.hmf
+        if self.hermite_out:
+            hmf = make_hermite(hmf)
+        return hmf
 
 
 class AuxField(nn.Module):
     init_vhs : jnp.ndarray
     parametrize : bool = False
     init_random : float = 0.
+    hermite_out : bool = True
     dtype: Optional[jnp.dtype] = None
 
     def setup(self):
@@ -42,7 +47,9 @@ class AuxField(nn.Module):
     def __call__(self, fields):
         vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
         log_weight = - 0.5 * (fields.conj() @ fields)
-        return make_hermite(vhs_sum), log_weight
+        if self.hermite_out:
+            vhs_sum = make_hermite(vhs_sum)
+        return vhs_sum, log_weight
 
 
 class AuxFieldNet(AuxField):
@@ -80,4 +87,6 @@ class AuxFieldNet(AuxField):
         fields = fields[:self.nhs] + tmp[:-1]
         vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
         log_weight = - 0.5 * (fields.conj() @ fields) - tmp[-1]
-        return make_hermite(vhs_sum), log_weight.real
+        if self.hermite_out:
+            vhs_sum = make_hermite(vhs_sum)
+        return vhs_sum, log_weight

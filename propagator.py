@@ -26,6 +26,7 @@ class Propagator(nn.Module):
     timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     init_random : float = 0.
+    hermite_ops : bool = True
     use_complex : bool = False
     sqrt_tsvpar : bool = False
 
@@ -83,6 +84,7 @@ class Propagator(nn.Module):
             _hmf, 
             parametrize=_pd["hmf"] and _vd["hmf"], 
             init_random=self.init_random,
+            hermite_out=self.hermite_ops,
             dtype=_dtype)
 
         # build Vhs operator, vmapped to eval all timesteps with fields shape [nts_v, nsite]
@@ -108,6 +110,7 @@ class Propagator(nn.Module):
             _vhs,
             parametrize=_pd["vhs"] and _vd["vhs"],
             init_random=self.init_random,
+            hermite_out=self.hermite_ops,
             dtype=_dtype,
             **network_args)
 
