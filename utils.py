@@ -101,6 +101,7 @@ def cmult(x1, x2):
         + 1j * (x1.imag * x2.real + x1.real * x2.imag))
 
 
+_INIT_RANDOM_SCALE = False
 def fix_init(key, value, dtype=None, random=0.):
     value = jnp.asarray(value, dtype=dtype)
     if random <= 0.:
@@ -108,7 +109,10 @@ def fix_init(key, value, dtype=None, random=0.):
     else:
         perturb = jax.random.truncated_normal(
             key, -2, 2, value.shape, _t_real) * random
-        return value + perturb
+        if _INIT_RANDOM_SCALE:
+            return value * (1 + perturb)
+        else:
+            return value + perturb
 
 
 def make_hermite(A):
