@@ -125,7 +125,6 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
         if fields.shape[0] > 1:
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
-        logov = logov.real # make sure the dtype is real
         rel_w = (lax.stop_gradient(relative_weight(logov, logsw, normalize=True))
                  if logsw is not None else 1.) / eloc.size
         exp_es = expect_unnorm((eloc * sign) * rel_w, logov) 

@@ -84,8 +84,8 @@ class AuxFieldNet(AuxField):
         if self.network is not None:
             tmp = self.network(tmp)
         tmp = self.last_dense(tmp)
-        fields = fields[:self.nhs] + tmp[:-1]
-        vhs_sum = jnp.tensordot(fields, self.vhs, axes=1)
+        nfields = fields[:self.nhs] + tmp[:-1]
+        vhs_sum = jnp.tensordot(nfields, self.vhs, axes=1)
         log_weight = - 0.5 * (fields.conj() @ fields) - tmp[-1]
         if self.hermite_out:
             vhs_sum = make_hermite(vhs_sum)

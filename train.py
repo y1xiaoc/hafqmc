@@ -86,7 +86,7 @@ def train(cfg: ConfigDict):
     writer = SummaryWriter(cfg.log.stat_path)
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
                     "exp_es": ".4f", "exp_s": ".4f"}
-    if cfg.loss.std_factor > 0:
+    if cfg.loss.std_factor >= 0:
         print_fields.update({"std_es": ".4f", "std_s": ".4f"})
     printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:

@@ -107,7 +107,7 @@ def fix_init(key, value, dtype=None, random=0.):
         return value
     else:
         perturb = jax.random.truncated_normal(
-            key, -2, 2, value.shape, dtype) * random
+            key, -2, 2, value.shape, _t_real) * random
         return value + perturb
 
 

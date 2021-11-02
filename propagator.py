@@ -48,7 +48,7 @@ class Propagator(nn.Module):
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
         if self.sqrt_tsvpar:
-            _ts_v = jnp.sqrt(jnp.abs(_ts_v))
+            _ts_v = jnp.sqrt(_ts_v if self.use_complex else jnp.abs(_ts_v))
         self.ts_v = (self.param("ts_v", fix_init, _ts_v, _dtype) 
                      if _pd["tsteps"] else _ts_v)
         self.ts_h = (self.param("ts_h", fix_init, _ts_h, _dtype) 
@@ -121,8 +121,9 @@ class Propagator(nn.Module):
         # may add a constant shift to the log weight
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
         # scale by the time step in advance, cmult is just complex number multiply
-        hmf_steps = cmult(-jnp.abs(self.ts_h)[..., None, None], all_hmf)
-        _ts_v = self.ts_v if self.sqrt_tsvpar else jnp.sqrt(jnp.abs(self.ts_v))
+        hmf_steps = cmult(-self.ts_h[..., None, None], all_hmf)
+        _ts_v = (self.ts_v if self.sqrt_tsvpar else 
+                 jnp.sqrt(self.ts_v if self.use_complex else jnp.abs(self.ts_v)))
         vhs_steps = cmult(1j * _ts_v[..., None, None], all_vhs)
         # iteratively apply the projection step
         ####### begin naive for loop version #######
@@ -136,8 +137,10 @@ class Propagator(nn.Module):
             ii, *ops = i_ops
             for op in ops:
                 wfn = expm_apply(op, wfn)
-            if self.ortho_intvl <= 0:
+            if self.ortho_intvl < 0:
                 return wfn, 0.
+            if self.ortho_intvl == 0:
+                return normalize(wfn)
             return lax.cond(
                 (ii+1) % self.ortho_intvl == 0,
                 lambda w: orthonormalize(w, self.nelec),
@@ -151,7 +154,7 @@ class Propagator(nn.Module):
         # split different spin part
         wfn = unpack_spin(wfn, self.nelec)
         # return both the wave function matrix and the log of scalar part
-        return wfn, log_weight
+        return wfn, log_weight.real
         
     def sign_logov(self, params, fields):
         # this method only works with fields of both bra and ket
@@ -184,3 +187,10 @@ def orthonormalize(wfn, nelec=None):
         return pack_spin(owfn)[0], logd
     else:
         return orthonormalize_ns(wfn)
+
+
+def normalize(wfn):
+    norm = jnp.linalg.norm(wfn, 2, -2, keepdims=True)
+    nwfn = wfn / norm
+    logd = jnp.log(norm).sum()
+    return nwfn, logd
