@@ -9,20 +9,15 @@ from .hamiltonian import Hamiltonian
 from .propagator import Propagator
 
 
-def expect_unnorm(value, log_weight):
-    aux_factor = jnp.exp(log_weight - lax.stop_gradient(log_weight))
-    expect = (value * aux_factor).sum()
-    return paxis.psum(expect)
-
-
-def relative_weight(log_target, log_sample, normalize=True):
-    diff_lw = log_target - log_sample
-    stblz = paxis.pmax(lax.stop_gradient(diff_lw.max()))
-    diff_weight = jnp.exp(diff_lw - stblz)
+def exp_shifted(x, normalize=None):
+    stblz = paxis.all_max(x)
+    exp = jnp.exp(x - stblz)
     if normalize:
-        mean_weight = paxis.pmean(lax.stop_gradient(diff_weight.mean()))
-        diff_weight = diff_weight / mean_weight
-    return diff_weight
+        assert normalize.lower() in ("sum", "mean"), "invalid normalize option"
+        reducer = getattr(paxis, f"all_{normalize.lower()}")
+        total = reducer(lax.stop_gradient(exp))
+        exp /= total
+    return exp
 
 
 def make_eval_local(hamil: Hamiltonian, prop: Propagator):
@@ -125,17 +120,18 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
         if fields.shape[0] > 1:
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
-        rel_w = (lax.stop_gradient(relative_weight(logov, logsw, normalize=True))
-                 if logsw is not None else 1.) / eloc.size
-        exp_es = expect_unnorm((eloc * sign) * rel_w, logov) 
-        exp_s = expect_unnorm(sign * rel_w, logov)
+        logsw = lax.stop_gradient(logsw) if logsw is not None else 0.
+        rel_w = rel_w = exp_shifted(logov - logsw, normalize="mean")
+        exp_es = paxis.all_mean((eloc * sign) * rel_w)
+        exp_s = paxis.all_mean(sign * rel_w)
         etot = exp_es.real / exp_s.real
         aux_data = {"e_tot": etot, 
                     "exp_es": exp_es.real, 
                     "exp_s": exp_s.real}
         if calc_stds:
-            var_es = expect_unnorm(jnp.abs(eloc * sign - exp_es)**2 * rel_w, logov)
-            var_s = expect_unnorm(jnp.abs(sign - exp_s)**2 * rel_w, logov)
+            tot_w = paxis.all_mean(rel_w) # should be just 1, but provide correct gradient
+            var_es = paxis.all_mean(jnp.abs(eloc * sign - exp_es)**2 * rel_w) / tot_w
+            var_s = paxis.all_mean(jnp.abs(sign - exp_s)**2 * rel_w) / tot_w
             aux_data.update(std_es=jnp.sqrt(var_es), std_s=jnp.sqrt(var_s))
         return etot, aux_data
             

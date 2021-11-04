@@ -39,19 +39,16 @@ pmean_if_pmap = wrap_if_pmap(lax.pmean)
 @dataclasses.dataclass(frozen=True)
 class PAxis:
     name  : str
-    vmap  : Callable = dataclasses.field(init=False)
-    pmap  : Callable = dataclasses.field(init=False)
-    pmax  : Callable = dataclasses.field(init=False)
-    pmin  : Callable = dataclasses.field(init=False)
-    psum  : Callable = dataclasses.field(init=False)
-    pmean : Callable = dataclasses.field(init=False)
-
     def __post_init__(self):
         for nm, fn in (("vmap", jax.vmap), ("pmap", jax.pmap),
                        ("pmax", pmax_if_pmap), ("pmin", pmin_if_pmap),
                        ("psum", psum_if_pmap), ("pmean", pmean_if_pmap)):
             object.__setattr__(self, nm, partial(fn, axis_name=self.name))
-
+        for nm in ("max", "min", "sum", "mean"):
+            jnp_fn = getattr(jnp, nm)
+            pax_fn = getattr(self, f"p{nm}")
+            all_fn = lambda x: pax_fn(jnp_fn(x))
+            object.__setattr__(self, f"all_{nm}", all_fn)
 
 PMAP_AXIS_NAME = "_pmap_axis"
 paxis = PAxis(PMAP_AXIS_NAME)
