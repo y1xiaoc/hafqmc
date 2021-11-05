@@ -130,8 +130,8 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
                     "exp_s": exp_s.real}
         if calc_stds:
             tot_w = paxis.all_mean(rel_w) # should be just 1, but provide correct gradient
-            var_es = paxis.all_mean(jnp.abs(eloc * sign - exp_es)**2 * rel_w) / tot_w
-            var_s = paxis.all_mean(jnp.abs(sign - exp_s)**2 * rel_w) / tot_w
+            var_es = paxis.all_mean(jnp.abs(eloc*sign - exp_es/tot_w)**2 * rel_w) / tot_w
+            var_s = paxis.all_mean(jnp.abs(sign - exp_s/tot_w)**2 * rel_w) / tot_w
             aux_data.update(std_es=jnp.sqrt(var_es), std_s=jnp.sqrt(var_s))
         return etot, aux_data
             
