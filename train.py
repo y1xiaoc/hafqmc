@@ -60,6 +60,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
     def step(key, params, mc_state, opt_state):
         mc_state, data = mc_sampler.sample(key, params, mc_state)
         (loss, aux), grads = loss_and_grad(params, data)
+        grads = jax.tree_map(jnp.conj, grads) # for complex parameters
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         mc_state = mc_sampler.refresh(mc_state, params)
