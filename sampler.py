@@ -58,6 +58,8 @@ def make_sampler(prop: Propagator, name: str, **kwargs):
         maker = make_gaussian
     elif name in ("metropolis", "mcmc", "mh"):
         maker = make_metropolis
+    elif name in ("langevin", "mala"):
+        maker = make_langevin
     else:
         raise NotImplementedError(f"unsupported sampler type: {name}")
     return maker(prop, **kwargs)
@@ -121,5 +123,52 @@ def make_metropolis(prop: Propagator, beta=1., sigma=0.05, steps=5):
         fields, ld_old = state
         ld_new = logdens_fn(params, fields)
         return (fields, ld_new)
+
+    return MCSampler(sample, init, refresh)
+
+
+def make_langevin(prop: Propagator, beta=1., tau=0.01, steps=5):
+    sample_shape = get_shape(prop)
+    raw_logdens_fn = lambda p, x: beta * prop.sign_logov(p, x)[1]
+    logd_and_grad = jax.vmap(jax.value_and_grad(raw_logdens_fn, 1), in_axes=(None, 0))
+
+    # log transition probability q(x2|x1)
+    def log_q(x2, x1, g1): 
+        d = x2 - x1 - tau * g1
+        summed_axis = tuple(range(1,x1.ndim))
+        norm = (d * d.conj()).real.sum(summed_axis)
+        return -1/(4*tau) * norm
+
+    def step(key, params, state):
+        x1, g1, ld1 = state
+        gkey, ukey = jax.random.split(key)
+        x2 = x1 + tau * g1 + jnp.sqrt(2*tau) * jax.random.normal(gkey, shape=x1.shape)
+        ld2, g2 = logd_and_grad(params, x2)
+        g2 = g2.conj() # handle complex grads, no influence for real case
+        ratio = ld2 + log_q(x1, x2, g2) - ld1 - log_q(x2, x1, g1)
+        rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
+        cond = ratio > rnd
+        x_new = jnp.where(cond[...,None,None,None], x2, x1)
+        g_new = jnp.where(cond[...,None,None,None], g2, g1)
+        ld_new = jnp.where(cond, ld2, ld1)
+        acc_rate = cond.mean()
+        return (x_new, g_new, ld_new), acc_rate
+
+    def sample(key, params, state):
+        multi_step = make_multistep_fn(step, steps, concat=False)
+        new_state, acc_rate = multi_step(key, params, state)
+        new_fields, new_grads, new_logdens = new_state
+        return new_state, (new_fields, new_logdens)
+
+    def init(key, params, batch_size):
+        sigma, mu = 1., 0.
+        fields = jax.random.normal(key, (batch_size, *sample_shape)) * sigma + mu
+        logdens, grads = logd_and_grad(params, fields)
+        return (fields, grads.conj(), logdens)
+
+    def refresh(state, params):
+        fields, grads_old, ld_old = state
+        ld_new, grads_new = logd_and_grad(params, fields)
+        return (fields, grads_new.conj(), ld_new)
 
     return MCSampler(sample, init, refresh)
