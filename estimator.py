@@ -121,7 +121,7 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
         logsw = lax.stop_gradient(logsw) if logsw is not None else 0.
-        rel_w = rel_w = exp_shifted(logov - logsw, normalize="mean")
+        rel_w = exp_shifted(logov - logsw, normalize="mean")
         exp_es = paxis.all_mean((eloc * sign) * rel_w)
         exp_s = paxis.all_mean(sign * rel_w)
         etot = exp_es.real / exp_s.real
@@ -136,3 +136,4 @@ def make_eval_total(hamil: Hamiltonian, prop: Propagator,
         return etot, aux_data
             
     return eval_total
+
