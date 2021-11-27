@@ -113,7 +113,7 @@ def fix_init(key, value, dtype=None, random=0.):
 
 
 def make_hermite(A):
-    return 0.5 * (A.conj().T + A)
+    return 0.5 * (A.conj().swapaxes(-1,-2) + A)
 
 
 def pack_spin(wfn):

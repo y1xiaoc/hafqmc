@@ -11,7 +11,7 @@ from .utils import fix_init
 from .utils import pack_spin, unpack_spin
 from .utils import expm_apply, cmult
 from .operator import OneBody, AuxField, AuxFieldNet
-from .hamiltonian import calc_slov
+from .hamiltonian import calc_slov, calc_rdm
 
 
 class Propagator(nn.Module):
@@ -26,7 +26,7 @@ class Propagator(nn.Module):
     timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     init_random : float = 0.
-    hermite_ops : bool = True
+    hermite_ops : bool = False
     use_complex : bool = False
     sqrt_tsvpar : bool = False
 
@@ -70,16 +70,13 @@ class Propagator(nn.Module):
             _hmf = self.param("hmf", fix_init, self.init_hmf, _dtype, self.init_random)
         else:
             _hmf = self.init_hmf
-        if _pd["hmf"] and _vd["hmf"]:
-            OneBodyCls = nn.vmap(
-                OneBody, 
-                in_axes=0,
-                out_axes=0,
-                axis_size=self.nts_h,
-                variable_axes={'params': 0},
-                split_rngs={'params': True})
-        else:
-            OneBodyCls = OneBody
+        OneBodyCls = nn.vmap(
+            OneBody, 
+            in_axes=0,
+            out_axes=0,
+            axis_size=self.nts_h,
+            variable_axes={'params': 0},
+            split_rngs={'params': True})
         self.hmf_ops = OneBodyCls(
             _hmf, 
             parametrize=_pd["hmf"] and _vd["hmf"], 
@@ -115,16 +112,13 @@ class Propagator(nn.Module):
             **network_args)
 
     def __call__(self, fields):
-        # get ops without time
-        all_hmf = self.hmf_ops()
-        all_vhs, all_lw = self.vhs_ops(fields)
+        # get ops with time
+        hmf_steps = self.hmf_ops(-self.ts_h)
+        _ts_v = 1j * (self.ts_v if self.sqrt_tsvpar else 
+            jnp.sqrt(self.ts_v if self.use_complex else jnp.abs(self.ts_v)))
+        vhs_steps, all_lw = self.vhs_ops(_ts_v, fields)
         # may add a constant shift to the log weight
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
-        # scale by the time step in advance, cmult is just complex number multiply
-        hmf_steps = cmult(-self.ts_h[..., None, None], all_hmf)
-        _ts_v = (self.ts_v if self.sqrt_tsvpar else 
-                 jnp.sqrt(self.ts_v if self.use_complex else jnp.abs(self.ts_v)))
-        vhs_steps = cmult(1j * _ts_v[..., None, None], all_vhs)
         # iteratively apply the projection step
         ####### begin naive for loop version #######
         # wfn = self.wfn_packed+0j
