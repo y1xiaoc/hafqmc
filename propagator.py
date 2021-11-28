@@ -27,8 +27,9 @@ class Propagator(nn.Module):
     aux_network : Union[None, Sequence[int], dict] = None
     init_random : float = 0.
     hermite_ops : bool = False
-    use_complex : bool = False
     sqrt_tsvpar : bool = False
+    use_complex : bool = False
+    mf_subtract : bool = False
 
     @classmethod
     def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
@@ -90,6 +91,7 @@ class Propagator(nn.Module):
         else:
             _vhs = self.init_vhs
         self.nsite = _vhs.shape[0]
+        trial_rdm = calc_rdm(self.init_wfn, self.init_wfn) if self.mf_subtract else None
         if self.aux_network is None:
             AuxFieldCls = AuxField
             network_args = {}
@@ -105,6 +107,7 @@ class Propagator(nn.Module):
             split_rngs={'params': _vd["vhs"] or _vd["vnet"]})
         self.vhs_ops = AuxFieldCls(
             _vhs,
+            trial_rdm = trial_rdm,
             parametrize=_pd["vhs"] and _vd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,

@@ -30,6 +30,7 @@ class OneBody(nn.Module):
 
 class AuxField(nn.Module):
     init_vhs : jnp.ndarray
+    trial_rdm : Optional[jnp.ndarray] = None
     parametrize : bool = False
     init_random : float = 0.
     hermite_out : bool = False
@@ -46,6 +47,9 @@ class AuxField(nn.Module):
     def __call__(self, step, fields):
         vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields.conj() @ fields)
+        if self.trial_rdm is not None:
+            vhs, vbar = meanfield_subtract(vhs, self.trial_rdm)
+            fields += step * vbar
         vhs_sum = jnp.tensordot(fields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
@@ -87,12 +91,15 @@ class AuxFieldNet(AuxField):
         tmp = self.last_dense(tmp)
         log_weight -= tmp[-1]
         nfields = fields[:self.nhs] + tmp[:-1]
+        if self.trial_rdm is not None:
+            vhs, vbar = meanfield_subtract(vhs, self.trial_rdm)
+            nfields += step * vbar
         vhs_sum = jnp.tensordot(nfields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
 
 
-def meanfield_shift(vhs, rdm):
+def meanfield_subtract(vhs, rdm):
     if rdm.ndim == 3:
         rdm = rdm.sum(0)
     nelec = rdm.trace()

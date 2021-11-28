@@ -30,6 +30,8 @@ def default() -> ConfigDict:
             "init_random": 0.,
             "use_complex": False,
             "sqrt_tsvpar": False,
+            "hermite_ops": False,
+            "mf_subtract": False,
         },
         "sample": {
             "size": 10_000,
@@ -46,7 +48,7 @@ def default() -> ConfigDict:
             "sign_target": 0.5,
             "sign_power": 2.,
             "std_factor": 0.,
-            "std_target": 1.,
+            "std_target": 100.,
             "std_power": 2.,
         },
         "optim": {
