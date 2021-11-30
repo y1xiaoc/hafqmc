@@ -89,6 +89,7 @@ def train(cfg: ConfigDict):
                     "exp_es": ".4f", "exp_s": ".4f"}
     if cfg.loss.std_factor >= 0:
         print_fields.update({"std_es": ".4f", "std_s": ".4f"})
+    print_fields["lr"] = ".1e"
     printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
@@ -178,8 +179,9 @@ def train(cfg: ConfigDict):
 
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
-            printer.print_fields({"step": ii, "loss": loss, **aux})
-            writer.add_scalars("stat", {"loss": loss, **aux}, global_step=ii)
+            _lr = lr_schedule(opt_state[-1][0].count) if callable(lr_schedule) else lr_schedule
+            printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
+            writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
             save_pickle(cfg.log.ckpt_path, (key, params, mc_state, opt_state))
     writer.close()
