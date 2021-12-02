@@ -187,6 +187,8 @@ class Hamiltonian(object):
         eri = self.ceri if self._eri is None else self._eri
         hmf_raw = self.h1e - 0.5 * calc_v0(eri)
         vhs_raw = self.ceri # vhs is real here, will time 1j in propagator
+        if trial is None:
+            return hmf_raw, vhs_raw, self.enuc
         rdm_t = calc_rdm(trial, trial)
         if rdm_t.ndim == 3:
             rdm_t = rdm_t.sum(0)

@@ -2,23 +2,22 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
-from typing import Sequence, Union, Tuple
-import collections
+from jax.numpy import ndarray
+from typing import Sequence, Union, Optional
 
 from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin
-from .utils import expm_apply, cmult
+from .utils import expm_apply
 from .operator import OneBody, AuxField, AuxFieldNet
 from .hamiltonian import calc_slov, calc_rdm
 
 
 class Propagator(nn.Module):
-    init_hmf : jnp.ndarray
-    init_vhs : jnp.ndarray
+    init_hmf : ndarray
+    init_vhs : ndarray
     init_enuc : float
-    init_wfn : Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
     extra_field : int = 0
@@ -29,20 +28,27 @@ class Propagator(nn.Module):
     hermite_ops : bool = False
     sqrt_tsvpar : bool = False
     use_complex : bool = False
-    mf_subtract : bool = False
+    mfshift_rdm : Optional[ndarray] = None
 
     @classmethod
-    def create(cls, hamiltonian, init_wfn, init_tsteps, *, 
-               max_nhs=None, **init_kwargs):
-        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(init_wfn)
+    def create(cls, hamiltonian, trial_wfn, init_tsteps, *, 
+               max_nhs=None, mf_subtract=False, **init_kwargs):
+        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(trial_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
-        return cls(init_hmf, init_vhs, init_enuc, init_wfn, init_tsteps, **init_kwargs)
+        mfrdm = calc_rdm(trial_wfn, trial_wfn) if mf_subtract else None
+        return cls(init_hmf, init_vhs, init_enuc, 
+            init_tsteps=init_tsteps, mfshift_rdm=mfrdm, **init_kwargs)
+
+    def fields_shape(self):
+        nts = len(self.init_tsteps)
+        nfield = self.init_vhs.shape[0] + self.extra_field
+        return jnp.array((nts, nfield))
 
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
         _dtype = _t_cplx if self.use_complex else _t_real
-        _pd = parse_bool(("hmf", "vhs", "wfn", "enuc", "tsteps"), self.parametrize)
+        _pd = parse_bool(("hmf", "vhs", "enuc", "tsteps"), self.parametrize)
         _vd = parse_bool(("hmf", "vhs", "vnet"), self.timevarying)
 
         # handle the time steps, for Hmf and Vhs separately
@@ -57,11 +63,6 @@ class Propagator(nn.Module):
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
 
-        # concat the spin of wavefunctions to make it an array
-        _wfn_packed, self.nelec = pack_spin(self.init_wfn)  
-        self.wfn_packed = (self.param("wfn", fix_init, _wfn_packed, _dtype, self.init_random) 
-                           if _pd["wfn"] else _wfn_packed)
-        self.nbasis = self.wfn_packed.shape[0]
         # core energy, should be useless
         self.enuc = (self.param("enuc", fix_init, self.init_enuc, _t_real) 
                      if _pd["enuc"] else self.init_enuc)
@@ -90,8 +91,6 @@ class Propagator(nn.Module):
             _vhs = self.param("vhs", fix_init, self.init_vhs, _dtype, self.init_random)
         else:
             _vhs = self.init_vhs
-        self.nsite = _vhs.shape[0]
-        trial_rdm = calc_rdm(self.init_wfn, self.init_wfn) if self.mf_subtract else None
         if self.aux_network is None:
             AuxFieldCls = AuxField
             network_args = {}
@@ -107,14 +106,15 @@ class Propagator(nn.Module):
             split_rngs={'params': _vd["vhs"] or _vd["vnet"]})
         self.vhs_ops = AuxFieldCls(
             _vhs,
-            trial_rdm = trial_rdm,
+            trial_rdm = self.mfshift_rdm,
             parametrize=_pd["vhs"] and _vd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
             dtype=_dtype,
             **network_args)
 
-    def __call__(self, fields):
+    def __call__(self, wfn, fields):
+        wfn, nelec = pack_spin(wfn)
         # get ops with time
         hmf_steps = self.hmf_ops(-self.ts_h)
         _ts_v = 1j * (self.ts_v if self.sqrt_tsvpar else 
@@ -124,7 +124,7 @@ class Propagator(nn.Module):
         log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
         # iteratively apply the projection step
         ####### begin naive for loop version #######
-        # wfn = self.wfn_packed+0j
+        # wfn = wfn+0j
         # for its in range(self.nts_v):
         #     wfn = expm_apply(hmf_steps[its], wfn)
         #     wfn = expm_apply(vhs_steps[its], wfn)
@@ -140,16 +140,16 @@ class Propagator(nn.Module):
                 return normalize(wfn)
             return lax.cond(
                 (ii+1) % self.ortho_intvl == 0,
-                lambda w: orthonormalize(w, self.nelec),
+                lambda w: orthonormalize(w, nelec),
                 lambda w: (w, 0.),
                 wfn) # orthonormalize for every these steps
-        wfn, logd = lax.scan(app_ops, self.wfn_packed+0j, 
+        wfn, logd = lax.scan(app_ops, wfn+0j, 
             (jnp.arange(self.nts_v), hmf_steps[:-1], vhs_steps))
         wfn = expm_apply(hmf_steps[-1], wfn)
         # recover the normalizing factor during qr
         log_weight += logd.sum()
         # split different spin part
-        wfn = unpack_spin(wfn, self.nelec)
+        wfn = unpack_spin(wfn, nelec)
         # return both the wave function matrix and the log of scalar part
         return wfn, log_weight.real
         
