@@ -1,18 +1,15 @@
-from flax.linen.module import init
 import jax
-from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from jax.numpy import ndarray
 import dataclasses
+from functools import partial
 from typing import Sequence, Union, Tuple, Optional
 
 from .utils import _t_real, _t_cplx
-from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
-from .utils import pack_spin, unpack_spin
-from .utils import expm_apply
 from .propagator import Propagator
+from .hamiltonian import calc_slov
 
 
 class Ansatz(nn.Module):
@@ -34,16 +31,23 @@ class Ansatz(nn.Module):
                      self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
                     if self.wfn_optim else wfn)
  
-    def __call__(self, fields):
+    def __call__(self, fields, keep_last=0):
         if isinstance(fields, ndarray):
             fields = (fields,)
         assert (jax.tree_map(jnp.shape, fields) 
                 == jax.tree_map(tuple, self.fields_shape()))
         wfn = self.wfn
         log_weight = 0.
-        for prop, flds in zip(self.propagators, fields):
+        if keep_last > 0:
+            results = []
+        for ii, (prop, flds) in enumerate(zip(self.propagators, fields)):
+            if keep_last > 0 and ii > len(self.propagators) - keep_last:
+                results.append((wfn, log_weight))
             wfn, logw = prop(wfn, flds)
             log_weight += logw
+        if keep_last > 0:
+            results.append((wfn, log_weight))
+            wfn, log_weight = jax.tree_multimap(lambda *xs: jnp.stack(xs, 0), *results)
         return wfn, log_weight
 
 
@@ -59,5 +63,18 @@ class BraKet(nn.Module):
             return (self.trial.fields_shape(), 
                     self.ansatz.fields_shape())
 
-    def __call__(self, fields):
-        return None
+    def __call__(self, fields, **kwargs):
+        if self.trial is None:
+            out = jax.vmap(partial(self.ansatz, **kwargs))(fields)
+            bra_out = jax.tree_map(lambda x: x[0], out)
+            ket_out = jax.tree_map(lambda x: x[1], out)
+        else:
+            bra_out = self.trial(fields[0], **kwargs)
+            ket_out = self.ansatz(fields[1], **kwargs)
+        return bra_out, ket_out
+
+    def sign_logov(self, fields):
+        (bra, bra_lw), (ket, ket_lw) = self(fields, keep_last=0)
+        sign, logov = calc_slov(bra, ket)
+        return sign, logov + bra_lw + ket_lw
+

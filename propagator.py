@@ -152,16 +152,6 @@ class Propagator(nn.Module):
         wfn = unpack_spin(wfn, nelec)
         # return both the wave function matrix and the log of scalar part
         return wfn, log_weight.real
-        
-    def sign_logov(self, params, fields):
-        # this method only works with fields of both bra and ket
-        assert fields.ndim == 3 and fields.shape[0] == 2
-        vapply = jax.vmap(self.apply, in_axes=(None, 0))
-        res = vapply(params, fields)
-        bra, bra_lw = jax.tree_map(lambda x: x[0], res)
-        ket, ket_lw = jax.tree_map(lambda x: x[1], res)
-        sign, logov = calc_slov(bra, ket)
-        return sign, logov + bra_lw + ket_lw
 
 
 def orthonormalize_ns(wfn):
