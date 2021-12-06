@@ -19,6 +19,7 @@ class Ansatz(nn.Module):
     wfn_complex: bool = False
     propagators: Sequence[Propagator] = dataclasses.field(default_factory=list)
 
+    @nn.nowrap
     def fields_shape(self):
         return tuple(p.fields_shape() for p in self.propagators)
 
@@ -31,7 +32,7 @@ class Ansatz(nn.Module):
                      self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
                     if self.wfn_optim else wfn)
  
-    def __call__(self, fields, keep_last=0):
+    def __call__(self, fields, *, keep_last=0):
         if isinstance(fields, ndarray):
             fields = (fields,)
         assert (jax.tree_map(jnp.shape, fields) 
@@ -47,7 +48,7 @@ class Ansatz(nn.Module):
             log_weight += logw
         if keep_last > 0:
             results.append((wfn, log_weight))
-            wfn, log_weight = jax.tree_multimap(lambda *xs: jnp.stack(xs, 0), *results)
+            wfn, log_weight = jax.tree_map(lambda *xs: jnp.stack(xs, 0), *results)
         return wfn, log_weight
 
 
@@ -55,6 +56,7 @@ class BraKet(nn.Module):
     ansatz : Ansatz
     trial : Optional[Ansatz] = None
 
+    @nn.nowrap
     def fields_shape(self):
         if self.trial is None:
             return jax.tree_map(lambda s: jnp.array((2, *s)), 
@@ -63,14 +65,16 @@ class BraKet(nn.Module):
             return (self.trial.fields_shape(), 
                     self.ansatz.fields_shape())
 
-    def __call__(self, fields, **kwargs):
+    def __call__(self, fields, *, keep_last=0):
         if self.trial is None:
-            out = jax.vmap(partial(self.ansatz, **kwargs))(fields)
+            out = jax.vmap(partial(self.ansatz, keep_last=keep_last))(fields)
             bra_out = jax.tree_map(lambda x: x[0], out)
             ket_out = jax.tree_map(lambda x: x[1], out)
         else:
-            bra_out = self.trial(fields[0], **kwargs)
-            ket_out = self.ansatz(fields[1], **kwargs)
+            keep_last = min(keep_last, 
+                len(self.trial.propagators)+1, len(self.ansatz.propagators)+1)
+            bra_out = self.trial(fields[0], keep_last=keep_last)
+            ket_out = self.ansatz(fields[1], keep_last=keep_last)
         return bra_out, ket_out
 
     def sign_logov(self, fields):

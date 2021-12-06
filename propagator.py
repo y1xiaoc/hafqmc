@@ -1,4 +1,5 @@
 import jax
+import numpy as onp
 from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
@@ -30,6 +31,7 @@ class Propagator(nn.Module):
     use_complex : bool = False
     mfshift_rdm : Optional[ndarray] = None
 
+    @nn.nowrap
     @classmethod
     def create(cls, hamiltonian, trial_wfn, init_tsteps, *, 
                max_nhs=None, mf_subtract=False, **init_kwargs):
@@ -40,10 +42,11 @@ class Propagator(nn.Module):
         return cls(init_hmf, init_vhs, init_enuc, 
             init_tsteps=init_tsteps, mfshift_rdm=mfrdm, **init_kwargs)
 
+    @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
         nfield = self.init_vhs.shape[0] + self.extra_field
-        return jnp.array((nts, nfield))
+        return onp.array((nts, nfield))
 
     def setup(self):
         # decide whether to make quantities changeable / parametrized in complex
