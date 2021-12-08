@@ -2,9 +2,8 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 from typing import NamedTuple, Callable, Tuple
-from functools import partial
 
-from .propagator import Propagator
+from .ansatz import BraKet
 from .utils import PyTree, Array
 
 
@@ -13,11 +12,11 @@ def log_dens_gaussian(x, mu=0., sigma=1.):
     return -0.5 * ((x - mu) / sigma) ** 2
 
 
-def get_shape(prop: Propagator):
-    """"calculate needed field shape from propagator: [2 x nts x nsite]"""
-    nts = len(prop.init_tsteps)
-    nfield = prop.init_vhs.shape[0] + prop.extra_field
-    return (2, nts, nfield)
+def ravel_shape(target_shape):
+    from jax.flatten_util import ravel_pytree
+    tmp = jax.tree_map(jnp.zeros, target_shape)
+    flat, unravel_fn = ravel_pytree(tmp)
+    return flat.size, unravel_fn
 
 
 KeyArray = Array
@@ -52,36 +51,42 @@ def make_multistep(sampler, nstep, concat=False):
     return MCSampler(multisample_fn, init_fn, refresh_fn)
 
 
-def make_sampler(prop: Propagator, name: str, **kwargs):
+def make_sampler(braket: BraKet, name: str, **kwargs):
+    maker = choose_sampler_maker(name)
+    logdens_fn = lambda p, x: braket.apply(p, x, method=braket.sign_logov)[1]
+    fields_shape = braket.fields_shape()
+    return maker(logdens_fn, fields_shape, **kwargs)
+    
+
+def choose_sampler_maker(name: str) -> Callable[..., MCSampler]:
     name = name.lower()
     if name == "gaussian":
-        maker = make_gaussian
-    elif name in ("metropolis", "mcmc", "mh"):
-        maker = make_metropolis
-    elif name in ("langevin", "mala"):
-        maker = make_langevin
-    else:
-        raise NotImplementedError(f"unsupported sampler type: {name}")
-    return maker(prop, **kwargs)
+        return make_gaussian
+    if name in ("metropolis", "mcmc", "mh"):
+        return make_metropolis
+    if name in ("langevin", "mala"):
+        return make_langevin
+    raise NotImplementedError(f"unsupported sampler type: {name}")
 
 
-def make_gaussian(prop: Propagator, mu=0., sigma=1., truncate=None):
-    sample_shape = get_shape(prop)
+def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
+    fsize, unravel = ravel_shape(fields_shape)
+    batch_unravel = jax.vmap(unravel, in_axes=0)
 
     def sample(key, params, state):
         nbatch = state.shape[0]
-        shape = (nbatch, *sample_shape)
+        shape = (nbatch, fsize)
         if truncate is not None:
             trc = jnp.abs(truncate)
             rawgs = jax.random.truncated_normal(key, -trc, trc, shape)
         else:
             rawgs = jax.random.normal(key, shape)
         new_fields = rawgs * sigma + mu
-        new_logdens = log_dens_gaussian(new_fields, mu, sigma).sum((-1,-2,-3))
-        return state, (new_fields, new_logdens)
+        new_logdens = log_dens_gaussian(new_fields, mu, sigma).sum(-1)
+        return state, (batch_unravel(new_fields), new_logdens)
     
     def init(key, params, batch_size):
-        return sample(key, params, jnp.zeros((batch_size, *sample_shape)))[0]
+        return jnp.zeros((batch_size, 0))
 
     def refresh(state, params):
         return state
@@ -89,20 +94,21 @@ def make_gaussian(prop: Propagator, mu=0., sigma=1., truncate=None):
     return MCSampler(sample, init, refresh)
 
 
-def make_metropolis(prop: Propagator, beta=1., sigma=0.05, steps=5):
-    sample_shape = get_shape(prop)
-    raw_logdens_fn = lambda p, x: beta * prop.sign_logov(p, x)[1]
-    logdens_fn = jax.vmap(raw_logdens_fn, in_axes=(None, 0))
+def make_metropolis(logdens_fn, fields_shape, beta=1., sigma=0.05, steps=5):
+    fsize, unravel = ravel_shape(fields_shape)
+    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    batch_unravel = jax.vmap(unravel, in_axes=0)
+    batch_logd = jax.vmap(ravel_logd, in_axes=(None, 0))
 
     def step(key, params, state):
         x1, ld1 = state
         gkey, ukey = jax.random.split(key)
         x2 = x1 + sigma * jax.random.normal(gkey, shape=x1.shape)
-        ld2 = logdens_fn(params, x2)
+        ld2 = batch_logd(params, x2)
         ratio = ld2 - ld1
         rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
         cond = ratio > rnd
-        x_new = jnp.where(cond[...,None,None,None], x2, x1)
+        x_new = jnp.where(cond[:,None], x2, x1)
         ld_new = jnp.where(cond, ld2, ld1)
         acc_rate = cond.mean()
         return (x_new, ld_new), acc_rate
@@ -111,32 +117,32 @@ def make_metropolis(prop: Propagator, beta=1., sigma=0.05, steps=5):
         multi_step = make_multistep_fn(step, steps, concat=False)
         new_state, acc_rate = multi_step(key, params, state)
         new_fields, new_logdens = new_state
-        return new_state, (new_fields, new_logdens)
+        return new_state, (batch_unravel(new_fields), new_logdens)
 
     def init(key, params, batch_size):
         sigma, mu = 1., 0.
-        fields = jax.random.normal(key, (batch_size, *sample_shape)) * sigma + mu
-        logdens = logdens_fn(params, fields)
+        fields = jax.random.normal(key, (batch_size, fsize)) * sigma + mu
+        logdens = batch_logd(params, fields)
         return (fields, logdens)
 
     def refresh(state, params):
         fields, ld_old = state
-        ld_new = logdens_fn(params, fields)
+        ld_new = batch_logd(params, fields)
         return (fields, ld_new)
 
     return MCSampler(sample, init, refresh)
 
 
-def make_langevin(prop: Propagator, beta=1., tau=0.01, steps=5):
-    sample_shape = get_shape(prop)
-    raw_logdens_fn = lambda p, x: beta * prop.sign_logov(p, x)[1]
-    logd_and_grad = jax.vmap(jax.value_and_grad(raw_logdens_fn, 1), in_axes=(None, 0))
+def make_langevin(logdens_fn, fields_shape, beta=1., tau=0.01, steps=5):
+    fsize, unravel = ravel_shape(fields_shape)
+    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    batch_unravel = jax.vmap(unravel, in_axes=0)
+    logd_and_grad = jax.vmap(jax.value_and_grad(ravel_logd, 1), in_axes=(None, 0))
 
     # log transition probability q(x2|x1)
     def log_q(x2, x1, g1): 
         d = x2 - x1 - tau * g1
-        summed_axis = tuple(range(1,x1.ndim))
-        norm = (d * d.conj()).real.sum(summed_axis)
+        norm = (d * d.conj()).real.sum(-1)
         return -1/(4*tau) * norm
 
     def step(key, params, state):
@@ -148,8 +154,8 @@ def make_langevin(prop: Propagator, beta=1., tau=0.01, steps=5):
         ratio = ld2 + log_q(x1, x2, g2) - ld1 - log_q(x2, x1, g1)
         rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
         cond = ratio > rnd
-        x_new = jnp.where(cond[...,None,None,None], x2, x1)
-        g_new = jnp.where(cond[...,None,None,None], g2, g1)
+        x_new = jnp.where(cond[:,None], x2, x1)
+        g_new = jnp.where(cond[:,None], g2, g1)
         ld_new = jnp.where(cond, ld2, ld1)
         acc_rate = cond.mean()
         return (x_new, g_new, ld_new), acc_rate
@@ -158,11 +164,11 @@ def make_langevin(prop: Propagator, beta=1., tau=0.01, steps=5):
         multi_step = make_multistep_fn(step, steps, concat=False)
         new_state, acc_rate = multi_step(key, params, state)
         new_fields, new_grads, new_logdens = new_state
-        return new_state, (new_fields, new_logdens)
+        return new_state, (batch_unravel(new_fields), new_logdens)
 
     def init(key, params, batch_size):
         sigma, mu = 1., 0.
-        fields = jax.random.normal(key, (batch_size, *sample_shape)) * sigma + mu
+        fields = jax.random.normal(key, (batch_size, fsize)) * sigma + mu
         logdens, grads = logd_and_grad(params, fields)
         return (fields, grads.conj(), logdens)
 
