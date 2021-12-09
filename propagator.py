@@ -10,9 +10,9 @@ from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin
-from .utils import expm_apply
+from .utils import make_expm_apply
 from .operator import OneBody, AuxField, AuxFieldNet
-from .hamiltonian import calc_slov, calc_rdm
+from .hamiltonian import calc_rdm
 
 
 class Propagator(nn.Module):
@@ -22,6 +22,7 @@ class Propagator(nn.Module):
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
     extra_field : int = 0
+    expm_option : Union[str, tuple] = ()
     parametrize : Union[bool, str, Sequence[str]] = True
     timevarying : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
@@ -49,6 +50,11 @@ class Propagator(nn.Module):
         return onp.array((nts, nfield))
 
     def setup(self):
+        # handle the expm_apply method
+        _expm_op = self.expm_option
+        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
+        self.expm_apply = make_expm_apply(*_expm_op)
+
         # decide whether to make quantities changeable / parametrized in complex
         _dtype = _t_cplx if self.use_complex else _t_real
         _pd = parse_bool(("hmf", "vhs", "enuc", "tsteps"), self.parametrize)
@@ -136,7 +142,7 @@ class Propagator(nn.Module):
         def app_ops(wfn, i_ops):
             ii, *ops = i_ops
             for op in ops:
-                wfn = expm_apply(op, wfn)
+                wfn = self.expm_apply(op, wfn)
             if self.ortho_intvl < 0:
                 return wfn, 0.
             if self.ortho_intvl == 0:
@@ -148,7 +154,7 @@ class Propagator(nn.Module):
                 wfn) # orthonormalize for every these steps
         wfn, logd = lax.scan(app_ops, wfn+0j, 
             (jnp.arange(self.nts_v), hmf_steps[:-1], vhs_steps))
-        wfn = expm_apply(hmf_steps[-1], wfn)
+        wfn = self.expm_apply(hmf_steps[-1], wfn)
         # recover the normalizing factor during qr
         log_weight += logd.sum()
         # split different spin part

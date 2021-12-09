@@ -10,10 +10,10 @@ from tensorboardX import SummaryWriter
 
 from .molecule import build_mf
 from .hamiltonian import Hamiltonian
-from .propagator import Propagator
+from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
-from .sampler import get_shape, make_sampler, make_multistep
-from .utils import ensure_mapping, save_pickle, load_pickle, Printer
+from .sampler import make_sampler, make_multistep
+from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 
 
 def lower_penalty(s, factor=1., target=1., power=2.):
@@ -93,7 +93,7 @@ def train(cfg: ConfigDict):
     printer = Printer(print_fields, time_format=".4f")
     if cfg.log.hpar_path:
         with open(cfg.log.hpar_path, "w") as hpfile:
-            print(cfg, file=hpfile)
+            print(cfg_to_yaml(cfg), file=hpfile)
 
     # get the constants
     total_iter = cfg.optim.iteration
@@ -126,14 +126,17 @@ def train(cfg: ConfigDict):
 
     # set up all other classes and functions
     logging.info("Setting up the training loop")
-    propagator = Propagator.create(hamiltonian, init_wfn, **cfg.propagator)
-    sampler_1s = make_sampler(propagator, 
+    ansatz = Ansatz.create(hamiltonian, init_wfn, **cfg.ansatz)
+    trial = (Ansatz.create(hamiltonian, init_wfn, **cfg.trial) 
+             if cfg.trial is not None else None)
+    braket = BraKet(ansatz, trial)
+    sampler_1s = make_sampler(braket, 
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
     mc_sampler = make_multistep(sampler_1s, batch_multi, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
-    expect_fn = make_eval_total(hamiltonian, propagator, 
+    expect_fn = make_eval_total(hamiltonian, braket, 
         default_batch=eval_size, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
@@ -150,9 +153,9 @@ def train(cfg: ConfigDict):
         logging.info("Initializing parameters and states")
         key = jax.random.PRNGKey(cfg.seed)
         key, pakey, mckey = jax.random.split(key, 3)
-        field_shape = get_shape(propagator)
+        fshape = braket.fields_shape()
         if cfg.restart.params is None:
-            params = propagator.init(pakey, jnp.zeros(field_shape[-2:]))
+            params = jax.jit(braket.init)(pakey, jax.tree_map(jnp.zeros, fshape))
         else:
             logging.info("Loading parameters from saved file")
             params = load_pickle(cfg.restart.params)
@@ -176,7 +179,6 @@ def train(cfg: ConfigDict):
         printer.reset_timer()
         key, subkey = jax.random.split(key)
         (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
-
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             _lr = lr_schedule(opt_state[-1][0].count) if callable(lr_schedule) else lr_schedule

@@ -1,4 +1,5 @@
 import jax
+import numpy as onp
 from jax import numpy as jnp
 from flax import linen as nn
 from jax.numpy import ndarray
@@ -7,17 +8,37 @@ from functools import partial
 from typing import Sequence, Union, Tuple, Optional
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init
+from .utils import fix_init, parse_bool
 from .propagator import Propagator
 from .hamiltonian import calc_slov
 
 
 class Ansatz(nn.Module):
     init_wfn: Union[ndarray, Tuple[ndarray, ndarray]]
-    wfn_optim: bool = False
+    wfn_param: bool = False
     wfn_random: float = 0.
     wfn_complex: bool = False
     propagators: Sequence[Propagator] = dataclasses.field(default_factory=list)
+
+    @nn.nowrap
+    @classmethod
+    def create(cls, hamiltonian, init_wfn, propagators=None, **kwargs):
+        if propagators is None:
+            ansatz_props = [Propagator.create(hamiltonian, init_wfn, **kwargs)]
+            ansatz_kwargs = dict(
+                wfn_param = parse_bool("wfn", kwargs['parametrize']),
+                wfn_random = kwargs['init_random'],
+                wfn_complex = kwargs['use_complex'])
+        else:
+            if not isinstance(propagators, (list, tuple)):
+                propagators = [propagators]
+            ansatz_kwargs = kwargs
+            ansatz_props = []
+            for popt in propagators:
+                prop = (Propagator.create(hamiltonian, init_wfn, **popt) 
+                        if popt is not None else ansatz_props[-1])
+                ansatz_props.append(prop)
+        return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self):
@@ -30,7 +51,7 @@ class Ansatz(nn.Module):
         _dtype = _t_cplx if self.wfn_complex else _t_real
         self.wfn = ((self.param("wfn_a", fix_init, wfn[0], _dtype, self.wfn_random),
                      self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
-                    if self.wfn_optim else wfn)
+                    if self.wfn_param else wfn)
  
     def __call__(self, fields, *, keep_last=0):
         if isinstance(fields, ndarray):
@@ -59,7 +80,7 @@ class BraKet(nn.Module):
     @nn.nowrap
     def fields_shape(self):
         if self.trial is None:
-            return jax.tree_map(lambda s: jnp.array((2, *s)), 
+            return jax.tree_map(lambda s: onp.array((2, *s)), 
                     self.ansatz.fields_shape())
         else:
             return (self.trial.fields_shape(), 

@@ -3,6 +3,7 @@ from jax import lax
 from jax import numpy as jnp
 from jax import scipy as jsp
 from flax import linen as nn
+from ml_collections import ConfigDict
 from typing import Dict, Sequence, Union, Callable, Any, Optional
 from functools import partial
 import dataclasses
@@ -54,43 +55,50 @@ PMAP_AXIS_NAME = "_pmap_axis"
 paxis = PAxis(PMAP_AXIS_NAME)
 
 
-_EXPMA_S = 1
-_EXPMA_M = 6
+def make_expm_apply(method="scan", m=6, s=1):
+    # the native python loop, slow compiling
+    def expm_apply_loop(A, B):
+        # n = A.shape[-1]
+        # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
+        # eta = jnp.expand_dims(jnp.exp(mu), -1)
+        # A = A - mu * jnp.identity(n, dtype=A.dtype)
+        F = B
+        for _ in range(s):
+            for n in range(1, m + 1):
+                B = A @ B / (s * n)
+                F = F + B
+            B = F
+        return F # * eta
+    # the jax scan version, faster compiling
+    def expm_apply_scan(A, B):
+        # n = A.shape[-1]
+        # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
+        # eta = jnp.expand_dims(jnp.exp(mu), -1)
+        # A = A - mu * jnp.identity(n, dtype=A.dtype)
+        ns = jnp.arange(1., m+1., dtype=A.dtype)
+        def _loop_m(B_and_F, n):
+            B, F = B_and_F
+            B = A @ B / (s * n)
+            return (B, F + B), None
+        def _loop_s(B, _):
+            (_, B), _ = lax.scan(_loop_m, (B, B), ns)
+            return B, None
+        B, _ = lax.scan(_loop_s, B, None, s)
+        return B # * eta
+    # the exact verison, slow execution
+    def expm_apply_exact(A, B):
+        exp_A = jsp.linalg.expm(A)
+        return exp_A @ B
+    # choose the function from the method name
+    if method == "loop":
+        return expm_apply_loop
+    if method == "scan":
+        return expm_apply_scan
+    if method == "exact":
+        return expm_apply_exact
+    raise ValueError(f"unknown expm_apply method type: {method}")
 
-def expm_apply_loop(A, B):
-    # n = A.shape[-1]
-    # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
-    # eta = jnp.expand_dims(jnp.exp(mu), -1)
-    # A = A - mu * jnp.identity(n, dtype=A.dtype)
-    F = B
-    for _ in range(_EXPMA_S):
-        for n in range(1, _EXPMA_M + 1):
-            B = A @ B / (_EXPMA_S * n)
-            F = F + B
-        B = F
-    return F # * eta
-
-def expm_apply_scan(A, B):
-    # n = A.shape[-1]
-    # mu = jnp.trace(A, axis1=-1, axis2=-2) / n
-    # eta = jnp.expand_dims(jnp.exp(mu), -1)
-    # A = A - mu * jnp.identity(n, dtype=A.dtype)
-    ns = jnp.arange(1., _EXPMA_M+1, dtype=A.dtype)
-    def _loop_m(B_and_F, n):
-        B, F = B_and_F
-        B = A @ B / (_EXPMA_S * n)
-        return (B, F + B), None
-    def _loop_s(B, _):
-        (_, B), _ = lax.scan(_loop_m, (B, B), ns)
-        return B, None
-    B, _ = lax.scan(_loop_s, B, None, _EXPMA_S)
-    return B # * eta
-
-def expm_apply_exact(A, B):
-    exp_A = jsp.linalg.expm(A)
-    return exp_A @ B
-
-expm_apply = expm_apply_scan
+expm_apply = make_expm_apply("scan", 6, 1)
 
 
 def cmult(x1, x2):
@@ -98,18 +106,17 @@ def cmult(x1, x2):
         + 1j * (x1.imag * x2.real + x1.real * x2.imag))
 
 
-_INIT_RAND_MULTIPLICATIVE = False
-def fix_init(key, value, dtype=None, random=0.):
+def fix_init(key, value, dtype=None, random=0., rnd_additive=False):
     value = jnp.asarray(value, dtype=dtype)
     if random <= 0.:
         return value
     else:
         perturb = jax.random.truncated_normal(
             key, -2, 2, value.shape, _t_real) * random
-        if _INIT_RAND_MULTIPLICATIVE:
-            return value * (1 + perturb)
-        else:
+        if rnd_additive:
             return value + perturb
+        else:
+            return value * (1 + perturb)
 
 
 def make_hermite(A):
@@ -140,6 +147,8 @@ def parse_activation(name, **kwargs):
     return partial(raw_fn, **kwargs)
 
 def parse_bool(keys, inputs):
+    if isinstance(keys, str):
+        return parse_bool((keys,), inputs)[keys]
     res_dict = {}
     if isinstance(inputs, str) and inputs.lower() in ("all", "true"):
         inputs = True
@@ -168,6 +177,28 @@ def load_pickle(filename):
     with open(filename, 'rb') as file:
         return pickle.load(file)
 
+
+def cfg_to_dict(cfg):
+    if not isinstance(cfg, ConfigDict):
+        return cfg
+    return jax.tree_map(cfg_to_dict, cfg.to_dict())
+
+def cfg_to_yaml(cfg):
+    from ruamel import yaml
+    return yaml.dump(cfg_to_dict(cfg))
+
+def dict_to_cfg(cdict, **kwargs):
+    if not isinstance(cdict, (dict, ConfigDict)):
+        return cdict
+    tree_type = (tuple, list)
+    cfg = ConfigDict(cdict, **kwargs)
+    for k, v in cfg.items():
+        if isinstance(v, ConfigDict):
+            cfg[k] = dict_to_cfg(v, **kwargs)
+        if type(v) in tree_type:
+            cfg[k] = type(v)(dict_to_cfg(vi, **kwargs) for vi in v)
+    return cfg
+    
 
 class Serial(nn.Module):
     layers : Sequence[nn.Module]
