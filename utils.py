@@ -184,8 +184,13 @@ def cfg_to_dict(cfg):
     return jax.tree_map(cfg_to_dict, cfg.to_dict())
 
 def cfg_to_yaml(cfg):
-    from ruamel import yaml
-    return yaml.dump(cfg_to_dict(cfg))
+    import yaml
+    from yaml import representer
+    representer.Representer.add_representer(
+        dict,
+        lambda self, data: self.represent_mapping(
+            'tag:yaml.org,2002:map', data, False))
+    return yaml.dump(cfg_to_dict(cfg), default_flow_style=None)
 
 def dict_to_cfg(cdict, **kwargs):
     if not isinstance(cdict, (dict, ConfigDict)):

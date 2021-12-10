@@ -56,6 +56,7 @@ def default() -> ConfigDict:
             "burn_in": 1_000,
         },
         "loss": {
+            # "step_weights": None,
             "sign_factor": 1.,
             "sign_target": 0.5,
             "sign_power": 2.,

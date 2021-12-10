@@ -2,7 +2,6 @@ import time
 import logging
 import jax 
 import optax
-from jax import lax
 from jax import numpy as jnp
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
@@ -37,13 +36,22 @@ def make_lr_schedule(start=1e-4, decay=1., delay=1e4):
     return lambda t: start * jnp.power((1.0 / (1.0 + (t/delay))), decay)
 
 
-def make_loss(expect_fn, 
-              sign_factor=1., sign_target=1., sign_power=2.,
-              std_factor=1., std_target=1., std_power=2):
+def make_loss(expect_fn, step_weights=None,
+              sign_factor=0., sign_target=1., sign_power=2.,
+              std_factor=0., std_target=1., std_power=2):
+
+    if step_weights is None:
+        step_weights = 1.
+    step_weights = jnp.asarray(step_weights).reshape(-1)
 
     def loss(params, data):
         e_tot, aux = expect_fn(params, data)
-        loss = e_tot
+        e_tot = jnp.reshape(e_tot, -1)[-step_weights.size:]
+        loss = (e_tot * step_weights[-e_tot.size:]).sum()
+        if e_tot.size > 1:
+            aux = jax.tree_map(lambda x: x[-1], aux)
+            for ii in range(e_tot.size - 1):
+                aux[f"e_mid{ii}"] = e_tot[ii]
         if sign_factor > 0:
             exp_s = aux["exp_s"]
             loss += lower_penalty(exp_s, sign_factor, sign_target, sign_power)
@@ -104,6 +112,7 @@ def train(cfg: ConfigDict):
     batch_multi = -(-sample_size // batch_size)
     sample_size = batch_size * batch_multi
     eval_size = cfg.optim.batch if cfg.optim.batch is not None else batch_size
+    eval_mstep = jnp.size(cfg.loss.step_weights) - (cfg.loss.step_weights is None)
     if sample_size % eval_size != 0:
         logging.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_size = batch_size
@@ -137,7 +146,7 @@ def train(cfg: ConfigDict):
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, braket, 
-        default_batch=eval_size, calc_stds=True)
+        multi_steps=eval_mstep, default_batch=eval_size, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
