@@ -56,7 +56,7 @@ def default() -> ConfigDict:
             "burn_in": 1_000,
         },
         "loss": {
-            # "step_weights": None,
+            "step_weights": None,
             "sign_factor": 1.,
             "sign_target": 0.5,
             "sign_power": 2.,
@@ -90,7 +90,7 @@ def default() -> ConfigDict:
 
 def example() -> ConfigDict:
     cfg = default()
-
+    # use one propagator with 5 steps and 100 aux fields on each step
     cfg.ansatz.propagators[0].max_nhs = 100
     cfg.ansatz.propagators[0].init_tsteps = [0.1] * 5
     cfg.ansatz.propagators[0].expm_option = ["scan", 2, 1]
@@ -98,19 +98,32 @@ def example() -> ConfigDict:
     cfg.ansatz.propagators[0].init_random = 0.1
     cfg.ansatz.propagators[0].sqrt_tsvpar = True
     cfg.ansatz.propagators[0].mf_subtract = True
-
+    # use adabelief and a long training
     cfg.optim.optimizer = "adabelief"
     cfg.optim.grad_clip = 1.
     cfg.optim.iteration = 40_000
     cfg.optim.lr.start = 3e-4
     cfg.optim.lr.delay = 5e3
     cfg.optim.lr.decay = 1.
-
+    # use mala sampler
     cfg.sample.sampler = {"name": "langevin", "tau": 0.03, "steps": 10}
     cfg.sample.burn_in = 100
-
+    # add sign penalty to prevent it go below 0.7
     cfg.loss.sign_factor = 1
     cfg.loss.sign_target = 0.7
-
+    # these are the suggested settings
     return cfg
 
+
+def example_test() -> ConfigDict:
+    cfg = example()
+    cfg.trial = {
+        "propagators": [],
+        "wfn_param": False,
+        "wfn_random": 0.,
+        "wfn_complex": False,
+    }
+    cfg.optim.iteration = 10_000
+    cfg.optim.lr.start = 0.
+    return cfg
+    

@@ -112,7 +112,7 @@ def train(cfg: ConfigDict):
     batch_multi = -(-sample_size // batch_size)
     sample_size = batch_size * batch_multi
     eval_size = cfg.optim.batch if cfg.optim.batch is not None else batch_size
-    eval_mstep = jnp.size(cfg.loss.step_weights) - (cfg.loss.step_weights is None)
+    eval_mstep = jnp.size(cfg.loss.step_weights) if cfg.loss.get("step_weights") is not None else 0
     if sample_size % eval_size != 0:
         logging.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_size = batch_size
