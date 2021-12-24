@@ -1,6 +1,7 @@
 import jax
 from jax import lax
 from jax import numpy as jnp
+from functools import partial
 from typing import NamedTuple, Callable, Tuple
 
 from .ansatz import BraKet
@@ -17,6 +18,17 @@ def ravel_shape(target_shape):
     tmp = jax.tree_map(jnp.zeros, target_shape)
     flat, unravel_fn = ravel_pytree(tmp)
     return flat.size, unravel_fn
+
+
+def tree_where(condition, x, y):
+    return jax.tree_map(partial(jnp.where, condition), x, y)
+
+
+def mh_select(key, ratio, state1, state2):
+    rnd = jnp.log(jax.random.uniform(key, shape=ratio.shape))
+    cond = ratio > rnd
+    new_state = jax.vmap(tree_where)(cond, state2, state1)
+    return new_state, cond
 
 
 KeyArray = Array
@@ -106,16 +118,11 @@ def make_metropolis(logdens_fn, fields_shape, beta=1., sigma=0.05, steps=5):
         x2 = x1 + sigma * jax.random.normal(gkey, shape=x1.shape)
         ld2 = batch_logd(params, x2)
         ratio = ld2 - ld1
-        rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
-        cond = ratio > rnd
-        x_new = jnp.where(cond[:,None], x2, x1)
-        ld_new = jnp.where(cond, ld2, ld1)
-        acc_rate = cond.mean()
-        return (x_new, ld_new), acc_rate
+        return mh_select(ukey, ratio, state, (x2, ld2))
 
     def sample(key, params, state):
         multi_step = make_multistep_fn(step, steps, concat=False)
-        new_state, acc_rate = multi_step(key, params, state)
+        new_state, accepted = multi_step(key, params, state)
         new_fields, new_logdens = new_state
         return new_state, (batch_unravel(new_fields), new_logdens)
 
@@ -152,17 +159,11 @@ def make_langevin(logdens_fn, fields_shape, beta=1., tau=0.01, steps=5):
         ld2, g2 = logd_and_grad(params, x2)
         g2 = g2.conj() # handle complex grads, no influence for real case
         ratio = ld2 + log_q(x1, x2, g2) - ld1 - log_q(x2, x1, g1)
-        rnd = jnp.log(jax.random.uniform(ukey, shape=ratio.shape))
-        cond = ratio > rnd
-        x_new = jnp.where(cond[:,None], x2, x1)
-        g_new = jnp.where(cond[:,None], g2, g1)
-        ld_new = jnp.where(cond, ld2, ld1)
-        acc_rate = cond.mean()
-        return (x_new, g_new, ld_new), acc_rate
+        return mh_select(ukey, ratio, state, (x2, g2, ld2))
 
     def sample(key, params, state):
         multi_step = make_multistep_fn(step, steps, concat=False)
-        new_state, acc_rate = multi_step(key, params, state)
+        new_state, accepted = multi_step(key, params, state)
         new_fields, new_grads, new_logdens = new_state
         return new_state, (batch_unravel(new_fields), new_logdens)
 
