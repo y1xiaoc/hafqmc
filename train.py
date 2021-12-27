@@ -11,7 +11,7 @@ from .molecule import build_mf
 from .hamiltonian import Hamiltonian
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
-from .sampler import make_sampler, make_multistep
+from .sampler import make_sampler, make_multistep, make_batched
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 
 
@@ -139,9 +139,10 @@ def train(cfg: ConfigDict):
     trial = (Ansatz.create(hamiltonian, init_wfn, **cfg.trial) 
              if cfg.trial is not None else None)
     braket = BraKet(ansatz, trial)
-    sampler_1s = make_sampler(braket, 
+    sampler_single = make_sampler(braket, 
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
-    mc_sampler = make_multistep(sampler_1s, batch_multi, concat=True)
+    sampler_batched = make_batched(sampler_single, batch_size)
+    mc_sampler = make_multistep(sampler_batched, batch_multi, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
@@ -170,13 +171,13 @@ def train(cfg: ConfigDict):
             params = load_pickle(cfg.restart.params)
             if isinstance(params, tuple): 
                 params = params[1]
-        mc_state = mc_sampler.init(mckey, params, batch_size)
+        mc_state = mc_sampler.init(mckey, params)
         opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
             logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             for ii in range(cfg.sample.burn_in):
                 key, subkey = jax.random.split(key)
-                mc_state, _ = jax.jit(sampler_1s.sample)(subkey, params, mc_state)
+                mc_state, _ = jax.jit(sampler_batched.sample)(subkey, params, mc_state)
     else:
         logging.info("Loading parameters and states from saved file")
         key, params, mc_state, opt_state = load_pickle(cfg.restart.states)

@@ -15,7 +15,7 @@ _t_real = jnp.float64
 _t_cplx = jnp.complex128
 
 
-Array = Any
+Array = jnp.ndarray
 PyTree = Any
 
 
@@ -104,6 +104,17 @@ expm_apply = make_expm_apply("scan", 6, 1)
 def cmult(x1, x2):
     return ((x1.real * x2.real - x1.imag * x2.imag) 
         + 1j * (x1.imag * x2.real + x1.real * x2.imag))
+
+
+def ravel_shape(target_shape):
+    from jax.flatten_util import ravel_pytree
+    tmp = jax.tree_map(jnp.zeros, target_shape)
+    flat, unravel_fn = ravel_pytree(tmp)
+    return flat.size, unravel_fn
+
+
+def tree_where(condition, x, y):
+    return jax.tree_map(partial(jnp.where, condition), x, y)
 
 
 def fix_init(key, value, dtype=None, random=0., rnd_additive=False):
