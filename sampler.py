@@ -26,6 +26,8 @@ def choose_sampler_maker(name: str) -> Callable[..., "MCSampler"]:
         return make_langevin
     if name in ("hamiltonian", "hybrid", "hmc"):
         return make_hamiltonian
+    if name in ("black", "blackjax"):
+        return make_blackjax
     raise NotImplementedError(f"unsupported sampler type: {name}")
 
 
@@ -70,6 +72,45 @@ class MCSampler(NamedTuple):
         """Call the sample function. See `self.sample` for details."""
         return self.sample(key, params, state)
     create = staticmethod(make_sampler)
+
+
+def logd_gaussian(x, mu=0., sigma=1.):
+    """unnormalized log density of Gaussian distribution"""
+    return -0.5 * jnp.abs((x - mu) / sigma) ** 2
+
+
+def mh_select(key, ratio, state1, state2):
+    rnd = jnp.log(jax.random.uniform(key, shape=ratio.shape))
+    cond = ratio > rnd
+    new_state = tree_where(cond, state2, state1)
+    return new_state, cond
+
+
+def make_leapfrog(potential_fn, dt, steps, with_carry=True):
+    pot_and_grad = jax.value_and_grad(potential_fn)
+
+    def leapfrog_carry(q, p, g, v):
+        # p for momentom and q for position
+        # f for force and v for potential
+        # simple Euler integration step
+        def int_step(carry, _):
+            q, p = carry
+            q += dt * p
+            p -= dt * pot_and_grad(q)[1]
+            return (q, p), None
+        # leapfrog by shifting half step
+        p -= 0.5 * dt * g # first half p
+        (q, p), _ = lax.scan(int_step, (q, p), None, length=steps-1)
+        q += dt * p # final whole step update of q
+        v, g = pot_and_grad(q) 
+        p -= 0.5 * dt * g # final half p
+        return q, p, g, v
+
+    def leapfrog_nocarry(q, p):
+        v, g = pot_and_grad(q)
+        return leapfrog_carry(q, p, g, v)[:2]
+
+    return leapfrog_carry if with_carry else leapfrog_nocarry
 
 
 def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
@@ -171,14 +212,15 @@ def make_hamiltonian(logdens_fn, fields_shape, beta=1., dt=0.1, length=1.):
 
     def sample(key, params, state):
         gkey, ukey = jax.random.split(key)
-        q1, f1, ld1 = state
+        q1, g1, ld1 = state
         p1 = jax.random.normal(gkey, shape=q1.shape)
-        grad_fn = jax.grad(lambda x: -ravel_logd(params, x))
-        q2, p2, f2 = leapfrog_carry(q1, p1, f1, grad_fn, dt, round(length / dt))
-        ld2 = ravel_logd(params, q2)
+        potential_fn = lambda x: -ravel_logd(params, x)
+        leapfrog = make_leapfrog(potential_fn, dt, round(length / dt), True)
+        q2, p2, f2, v2 = leapfrog(q1, p1, -g1, -ld1)
+        g2, ld2 = -f2, -v2
         ratio = (logd_gaussian(-p2).sum(-1)+ld2) - (logd_gaussian(p1).sum(-1)+ld1)
-        (qn, fn, ldn), accepted = mh_select(ukey, ratio, state, (q2, f2, ld2))
-        return (qn, fn, ldn), (unravel(qn), ldn)
+        (qn, gn, ldn), accepted = mh_select(ukey, ratio, state, (q2, g2, ld2))
+        return (qn, gn, ldn), (unravel(qn), ldn)
 
     def init(key, params):
         sigma, mu = 1., 0.
@@ -193,44 +235,29 @@ def make_hamiltonian(logdens_fn, fields_shape, beta=1., dt=0.1, length=1.):
     return MCSampler(sample, init, refresh)
 
 
-def logd_gaussian(x, mu=0., sigma=1.):
-    """unnormalized log density of Gaussian distribution"""
-    return -0.5 * jnp.abs((x - mu) / sigma) ** 2
+def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
+    from blackjax import hmc, nuts
+    fsize, unravel = ravel_shape(fields_shape)
+    inv_mass = 0.5 * jnp.ones(fsize)
+    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    kmodule = {"hmc": hmc, "nuts": nuts}[kernel]
 
+    def sample(key, params, state):
+        logprob_fn = partial(ravel_logd, params)
+        kernel_fn = kmodule.kernel(logprob_fn, 
+            inverse_mass_matrix=inv_mass, **kwargs)
+        state, info = kernel_fn(key, state)
+        return state, (unravel(state.position), -state.potential_energy)
 
-def mh_select(key, ratio, state1, state2):
-    rnd = jnp.log(jax.random.uniform(key, shape=ratio.shape))
-    cond = ratio > rnd
-    new_state = tree_where(cond, state2, state1)
-    return new_state, cond
+    def init(key, params):
+        sigma, mu = 1., 0.
+        fields = jax.random.normal(key, (fsize,)) * sigma + mu
+        logprob_fn = partial(ravel_logd, params)
+        return kmodule.new_state(fields, logprob_fn)
 
+    def refresh(state, params):
+        fields = state.position
+        logprob_fn = partial(ravel_logd, params)
+        return kmodule.new_state(fields, logprob_fn)
 
-def leapfrog(q, p, grad_fn, dt, steps):
-    # simple Euler integration step
-    def int_step(carry, _):
-        q, p = carry
-        q += dt * p
-        p -= dt * grad_fn(q)
-        return (q, p), None
-    # leapfrog by shifting half step
-    p -= 0.5 * dt * grad_fn(q) # first half p
-    (q, p), _ = lax.scan(int_step, (q, p), None, length=steps-1)
-    q += dt * p # final whole step update of q
-    p -= 0.5 * dt * grad_fn(q) # final half p
-    return q, p
-
-
-def leapfrog_carry(q, p, f, grad_fn, dt, steps):
-    # simple Euler integration step
-    def int_step(carry, _):
-        q, p = carry
-        q += dt * p
-        p -= dt * grad_fn(q)
-        return (q, p), None
-    # leapfrog by shifting half step
-    p += 0.5 * dt * f # first half p
-    (q, p), _ = lax.scan(int_step, (q, p), None, length=steps-1)
-    q += dt * p # final whole step update of q
-    f = -grad_fn(q) # force at final point
-    p += 0.5 * dt * f # final half p
-    return q, p, f
+    return MCSampler(sample, init, refresh)
