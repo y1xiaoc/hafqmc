@@ -48,11 +48,14 @@ def make_multistep(sampler: "MCSampler", nstep: int, concat: bool = False):
     return MCSampler(multisample_fn, init_fn, refresh_fn)
 
 
-def make_batched(sampler: "MCSampler", nbatch: int):
+def make_batched(sampler: "MCSampler", nbatch: int, concat: bool = False):
     sample_fn, init_fn, refresh_fn = sampler
     def sample(key, params, state):
         vkey = jax.random.split(key, nbatch)
-        return jax.vmap(sample_fn, (0, None, 0))(vkey, params, state)
+        new_state, data = jax.vmap(sample_fn, (0, None, 0))(vkey, params, state)
+        if concat:
+            data = jax.tree_map(jnp.concatenate, data)
+        return new_state, data
     def init(key, params):
         vkey = jax.random.split(key, nbatch)
         return jax.vmap(init_fn, (0, None))(vkey, params)

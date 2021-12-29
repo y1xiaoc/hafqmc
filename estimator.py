@@ -101,10 +101,12 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
         fields, logsw = data
         if isinstance(fields, jnp.ndarray):
             fields = (fields,)
-        _f0 = jax.tree_leaves(fields)[0] # just for checking the shape
         fshape = braket.fields_shape()
-        if _f0.ndim - 2 != jax.tree_leaves(fshape)[0].size:
-            batch = min(_f0.shape[0], default_batch)
+        # _f0 and _fs0 are just for checking the shape
+        _f0 = jax.tree_leaves(fields)[0]
+        _fs0 = jax.tree_leaves(fshape)[0]
+        if _f0.ndim != _fs0.size + 2:
+            batch = min(_f0.size // _fs0.prod(), default_batch)
             fields = jax.tree_map(lambda x,s: x.reshape(-1, batch, *s), fields, fshape)
             if logsw is not None:
                 logsw = logsw.reshape(-1, batch)

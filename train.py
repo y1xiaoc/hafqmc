@@ -106,16 +106,16 @@ def train(cfg: ConfigDict):
     # get the constants
     total_iter = cfg.optim.iteration
     sample_size = cfg.sample.size
-    batch_size = cfg.sample.batch
-    if sample_size % batch_size != 0:
+    sample_batch = cfg.sample.batch
+    if sample_size % sample_batch != 0:
         logging.warning("Sample size not divisible by batch size, rounding up")
-    batch_multi = -(-sample_size // batch_size)
-    sample_size = batch_size * batch_multi
-    eval_size = cfg.optim.batch if cfg.optim.batch is not None else batch_size
+    sample_step = -(-sample_size // sample_batch)
+    sample_size = sample_batch * sample_step
+    eval_batch = cfg.optim.batch if cfg.optim.batch is not None else sample_batch
     eval_mstep = jnp.size(cfg.loss.step_weights) if cfg.loss.get("step_weights") is not None else 0
-    if sample_size % eval_size != 0:
+    if sample_size % eval_batch != 0:
         logging.warning("Eval batch size not dividing sample size, using sample batch size")
-        eval_size = batch_size
+        eval_batch = sample_batch
 
     # set up the hamiltonian
     if cfg.restart.hamiltonian is None:
@@ -139,15 +139,15 @@ def train(cfg: ConfigDict):
     trial = (Ansatz.create(hamiltonian, init_wfn, **cfg.trial) 
              if cfg.trial is not None else None)
     braket = BraKet(ansatz, trial)
-    sampler_single = make_sampler(braket, 
+    sampler_1s_1c = make_sampler(braket, 
         **ensure_mapping(cfg.sample.sampler, default_key="name"))
-    sampler_batched = make_batched(sampler_single, batch_size)
-    mc_sampler = make_multistep(sampler_batched, batch_multi, concat=True)
+    sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
+    mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, braket, 
-        multi_steps=eval_mstep, default_batch=eval_size, calc_stds=True)
+        multi_steps=eval_mstep, default_batch=eval_batch, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
@@ -177,7 +177,7 @@ def train(cfg: ConfigDict):
             logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             for ii in range(cfg.sample.burn_in):
                 key, subkey = jax.random.split(key)
-                mc_state, _ = jax.jit(sampler_batched.sample)(subkey, params, mc_state)
+                mc_state, _ = jax.jit(sampler_1s_nc.sample)(subkey, params, mc_state)
     else:
         logging.info("Loading parameters and states from saved file")
         key, params, mc_state, opt_state = load_pickle(cfg.restart.states)
