@@ -130,7 +130,7 @@ def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
         return state, (unravel(new_fields), new_logdens)
     
     def init(key, params):
-        return None
+        return jnp.zeros((0,))
 
     def refresh(state, params):
         return state
