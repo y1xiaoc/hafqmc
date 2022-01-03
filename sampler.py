@@ -9,10 +9,16 @@ from .utils import PyTree, Array
 from .utils import ravel_shape, tree_where
 
 
-def make_sampler(braket: BraKet, name: str, **kwargs):
+def make_sampler(braket: BraKet, name: str, beta=1., smear=None, **kwargs):
     maker = choose_sampler_maker(name)
-    logdens_fn = lambda p, x: braket.apply(p, x, method=braket.sign_logov)[1]
     fields_shape = braket.fields_shape()
+    # logdens_fn = lambda p, x: beta * braket.apply(p, x, method=braket.sign_logov)[1]
+    def logdens_fn(p, x):
+        sign, logd = braket.apply(p, x, method=braket.sign_logov)
+        if smear is not None and smear > 0:
+            cosine = jnp.abs(sign.real) + smear
+            logd += jnp.log(cosine)
+        return beta * logd
     return maker(logdens_fn, fields_shape, **kwargs)
     
 
@@ -138,9 +144,9 @@ def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
     return MCSampler(sample, init, refresh)
 
 
-def make_metropolis(logdens_fn, fields_shape, beta=1., sigma=0.05, steps=5):
+def make_metropolis(logdens_fn, fields_shape, sigma=0.05, steps=5):
     fsize, unravel = ravel_shape(fields_shape)
-    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
 
     def step(key, params, state):
         x1, ld1 = state
@@ -169,9 +175,9 @@ def make_metropolis(logdens_fn, fields_shape, beta=1., sigma=0.05, steps=5):
     return MCSampler(sample, init, refresh)
 
 
-def make_langevin(logdens_fn, fields_shape, beta=1., tau=0.01, steps=5):
+def make_langevin(logdens_fn, fields_shape, tau=0.01, steps=5):
     fsize, unravel = ravel_shape(fields_shape)
-    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
     logd_and_grad = jax.value_and_grad(ravel_logd, 1)
 
     # log transition probability q(x2|x1)
@@ -208,9 +214,9 @@ def make_langevin(logdens_fn, fields_shape, beta=1., tau=0.01, steps=5):
     return MCSampler(sample, init, refresh)
 
 
-def make_hamiltonian(logdens_fn, fields_shape, beta=1., dt=0.1, length=1.):
+def make_hamiltonian(logdens_fn, fields_shape, dt=0.1, length=1.):
     fsize, unravel = ravel_shape(fields_shape)
-    ravel_logd = lambda p, x: beta * logdens_fn(p, unravel(x))
+    ravel_logd = lambda p, x: logdens_fn(p, unravel(x))
     logd_and_grad = jax.value_and_grad(ravel_logd, 1)
 
     def sample(key, params, state):
