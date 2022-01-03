@@ -113,7 +113,8 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
         return fields, logsw
 
     def calc_statistics(eloc, sign, logov, logsw):
-        logsw = lax.stop_gradient(logsw) if logsw is not None else 0.
+        logsw = logsw if logsw is not None else logov
+        logsw = lax.stop_gradient(logsw)
         rel_w = exp_shifted(logov - logsw, normalize="mean")
         exp_es = paxis.all_mean((eloc * sign) * rel_w)
         exp_s = paxis.all_mean(sign * rel_w)
