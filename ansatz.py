@@ -18,7 +18,7 @@ class Ansatz(nn.Module):
     wfn_param: bool = False
     wfn_random: float = 0.
     wfn_complex: bool = False
-    propagators: Sequence[Optional[Propagator]] = dataclasses.field(default_factory=list)
+    propagators: Sequence[Propagator] = dataclasses.field(default_factory=list)
 
     @nn.nowrap
     @classmethod
@@ -36,20 +36,13 @@ class Ansatz(nn.Module):
             ansatz_props = []
             for popt in propagators:
                 prop = (Propagator.create(hamiltonian, init_wfn, **popt) 
-                        if popt is not None else None)
+                        if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
         return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self):
-        shapes = []
-        prev_p = None
-        for p in self.propagators:
-            if p is None:
-                p = prev_p
-            shapes.append(p.fields_shape())
-            prev_p = p
-        return tuple(shapes)
+        return tuple(p.fields_shape() for p in self.propagators)
 
     def setup(self):
         wfn = self.init_wfn 
@@ -69,15 +62,11 @@ class Ansatz(nn.Module):
         log_weight = 0.
         if keep_last > 0:
             results = []
-        prev_prop = None
         for ii, (prop, flds) in enumerate(zip(self.propagators, fields)):
             if keep_last > 0 and ii > len(self.propagators) - keep_last:
                 results.append((wfn, log_weight))
-            if prop is None:
-                prop = prev_prop
             wfn, logw = prop(wfn, flds)
             log_weight += logw
-            prev_prop = prop
         if keep_last > 0:
             results.append((wfn, log_weight))
             wfn, log_weight = jax.tree_map(lambda *xs: jnp.stack(xs, 0), *results)
