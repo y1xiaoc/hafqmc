@@ -54,12 +54,10 @@ class Propagator(nn.Module):
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
         self.expm_apply = make_expm_apply(*_expm_op)
-
         # decide whether to make quantities changeable / parametrized in complex
         _dtype = _t_cplx if self.use_complex else _t_real
         _pd = parse_bool(("hmf", "vhs", "enuc", "tsteps"), self.parametrize)
-        _vd = parse_bool(("hmf", "vhs", "vnet"), self.timevarying)
-
+        _vd = parse_bool(("hmf", "vhs"), self.timevarying)
         # handle the time steps, for Hmf and Vhs separately
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
@@ -71,92 +69,65 @@ class Propagator(nn.Module):
                      if _pd["tsteps"] else _ts_h)
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
-
         # core energy, should be useless
         self.enuc = (self.param("enuc", fix_init, self.init_enuc, _t_real) 
                      if _pd["enuc"] else self.init_enuc)
-
-        # build Hmf operator, can be vmapped to eval all the timesteps at the same time
-        if _pd["hmf"] and not _vd["hmf"]:
-            _hmf = self.param("hmf", fix_init, self.init_hmf, _dtype, self.init_random)
-        else:
-            _hmf = self.init_hmf
-        OneBodyCls = nn.vmap(
-            OneBody, 
-            in_axes=0,
-            out_axes=0,
-            axis_size=self.nts_h,
-            variable_axes={'params': 0},
-            split_rngs={'params': True})
-        self.hmf_ops = OneBodyCls(
-            _hmf, 
-            parametrize=_pd["hmf"] and _vd["hmf"], 
+        # build Hmf operator
+        _hop = OneBody(
+            self.init_hmf, 
+            parametrize=_pd["hmf"], 
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
             dtype=_dtype)
-
-        # build Vhs operator, vmapped to eval all timesteps with fields shape [nts_v, nsite]
-        if _pd["vhs"] and not _vd["vhs"]:
-            _vhs = self.param("vhs", fix_init, self.init_vhs, _dtype, self.init_random)
-        else:
-            _vhs = self.init_vhs
+        self.hmf_ops = [_hop.clone() if _vd["hmf"] else _hop 
+                        for _ in range(self.nts_h)]
+        # build Vhs operator
         if self.aux_network is None:
             AuxFieldCls = AuxField
             network_args = {}
         else:
             AuxFieldCls = AuxFieldNet
             network_args = ensure_mapping(self.aux_network, "hidden_sizes")
-        AuxFieldCls = nn.vmap(
-            AuxFieldCls,
-            in_axes=0,
-            out_axes=0,
-            axis_size=self.nts_v,
-            variable_axes={'params': 0 if (_vd["vhs"] or _vd["vnet"]) else None},
-            split_rngs={'params': _vd["vhs"] or _vd["vnet"]})
-        self.vhs_ops = AuxFieldCls(
-            _vhs,
+        _vop = AuxFieldCls(
+            self.init_vhs,
             trial_rdm = self.mfshift_rdm,
-            parametrize=_pd["vhs"] and _vd["vhs"],
+            parametrize=_pd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
             dtype=_dtype,
             **network_args)
+        self.vhs_ops = [_vop.clone() if _vd["vhs"] else _vop 
+                        for _ in range(self.nts_v)]
 
     def __call__(self, wfn, fields):
         wfn, nelec = pack_spin(wfn)
-        # get ops with time
-        hmf_steps = self.hmf_ops(-self.ts_h)
+        log_weight = self.enuc # + 0.5 * self.nts_v * self.nsite
+        # get prop times
+        _ts_h = -self.ts_h # the negation of t goes to here
         _ts_v = 1j * (self.ts_v if self.sqrt_tsvpar else 
             jnp.sqrt(self.ts_v if self.use_complex else jnp.abs(self.ts_v)))
-        vhs_steps, all_lw = self.vhs_ops(_ts_v, fields)
-        # may add a constant shift to the log weight
-        log_weight = all_lw.sum() + self.enuc # + 0.5 * self.nts_v * self.nsite
-        # iteratively apply the projection step
-        ####### begin naive for loop version #######
-        # wfn = wfn+0j
-        # for its in range(self.nts_v):
-        #     wfn = expm_apply(hmf_steps[its], wfn)
-        #     wfn = expm_apply(vhs_steps[its], wfn)
-        # wfn = expm_apply(hmf_steps[-1], wfn)
-        ######## end naive for loop version ########
-        def app_ops(wfn, i_ops):
-            ii, *ops = i_ops
-            for op in ops:
-                wfn = self.expm_apply(op, wfn)
-            if self.ortho_intvl < 0:
-                return wfn, 0.
+        # step functions in iterative prop
+        def app_h(wfn, ii):
+            hmf = self.hmf_ops[ii](_ts_h[ii])
+            return self.expm_apply(hmf, wfn), 0.
+        def app_v(wfn, ii):
+            vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii])
+            return self.expm_apply(vhs, wfn), lw
+        def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)
-            return lax.cond(
-                (ii+1) % self.ortho_intvl == 0,
-                lambda w: orthonormalize(w, nelec),
-                lambda w: (w, 0.),
-                wfn) # orthonormalize for every these steps
-        wfn, logd = lax.scan(app_ops, wfn+0j, 
-            (jnp.arange(self.nts_v), hmf_steps[:-1], vhs_steps))
-        wfn = self.expm_apply(hmf_steps[-1], wfn)
-        # recover the normalizing factor during qr
-        log_weight += logd.sum()
+            if (ii+1) % self.ortho_intvl == 0:
+                return orthonormalize(wfn, nelec)
+            return wfn, 0.
+        # iteratively apply step functions
+        wfn = wfn+0j
+        for its in range(self.nts_v):
+            wfn, ldh = app_h(wfn, its)
+            wfn, ldv = app_v(wfn, its)
+            wfn, ldn = nmlz(wfn, its)
+            log_weight += ldh + ldv + ldn
+        wfn, ldh = app_h(wfn, -1)
+        log_weight += ldh
         # split different spin part
         wfn = unpack_spin(wfn, nelec)
         # return both the wave function matrix and the log of scalar part
