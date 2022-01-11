@@ -85,7 +85,7 @@ class MCSampler(NamedTuple):
 
 def logd_gaussian(x, mu=0., sigma=1.):
     """unnormalized log density of Gaussian distribution"""
-    return -0.5 * jnp.abs((x - mu) / sigma) ** 2
+    return -0.5 * ((x - mu) / sigma) ** 2
 
 
 def mh_select(key, ratio, state1, state2):

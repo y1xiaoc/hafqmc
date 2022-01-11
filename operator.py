@@ -1,4 +1,5 @@
 import jax
+from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from typing import Optional, Sequence
@@ -44,12 +45,15 @@ class AuxField(nn.Module):
             self.vhs = self.init_vhs
         self.nhs = self.init_vhs.shape[0]
 
-    def __call__(self, step, fields):
+    def __call__(self, step, fields, trdm=None):
         vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
-        log_weight = - 0.5 * (fields.conj() @ fields)
-        if self.trial_rdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, self.trial_rdm)
-            fields += step * vbar
+        log_weight = - 0.5 * (fields ** 2).sum()
+        trdm = lax.stop_gradient(trdm) if trdm is not None else self.trial_rdm
+        if trdm is not None:
+            vhs, vbar = meanfield_subtract(vhs, trdm)
+            fshift = step * vbar
+            fields += fshift
+            log_weight += 0.5 * (fshift ** 2).sum()
         vhs_sum = jnp.tensordot(fields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
@@ -82,27 +86,32 @@ class AuxFieldNet(AuxField):
         else:
             self.network = None
         
-    def __call__(self, step, fields):
+    def __call__(self, step, fields, trdm=None):
         vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
-        log_weight = - 0.5 * (fields.conj() @ fields)
+        log_weight = - 0.5 * (fields ** 2).sum()
         tmp = fields
         if self.network is not None:
             tmp = self.network(tmp)
         tmp = self.last_dense(tmp)
         log_weight -= tmp[-1]
         nfields = fields[:self.nhs] + tmp[:-1]
-        if self.trial_rdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, self.trial_rdm)
-            nfields += step * vbar
+        trdm = lax.stop_gradient(trdm) if trdm is not None else self.trial_rdm
+        if trdm is not None:
+            vhs, vbar = meanfield_subtract(vhs, trdm)
+            fshift = step * vbar
+            nfields += fshift
+            log_weight += 0.5 * (fshift ** 2).sum()
         vhs_sum = jnp.tensordot(nfields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
 
 
-def meanfield_subtract(vhs, rdm):
+def meanfield_subtract(vhs, rdm, cutoff=None):
     if rdm.ndim == 3:
         rdm = rdm.sum(0)
-    nelec = rdm.trace()
+    nelec = lax.stop_gradient(rdm).trace().real
     vbar = jnp.einsum("kpq,pq->k", vhs, rdm)
+    if cutoff is not None:
+        vbar = jnp.where(vbar > cutoff, vbar / jnp.abs(vbar) * cutoff, vbar)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar

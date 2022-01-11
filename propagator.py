@@ -4,7 +4,7 @@ from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
 from jax.numpy import ndarray
-from typing import Sequence, Union, Optional
+from typing import Sequence, Union, Optional, Tuple
 
 from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
@@ -30,7 +30,9 @@ class Propagator(nn.Module):
     hermite_ops : bool = False
     sqrt_tsvpar : bool = False
     use_complex : bool = False
-    mfshift_rdm : Optional[ndarray] = None
+    mfshift_wfn : Optional[Tuple[ndarray, ndarray]] = None
+    dyn_mfshift : bool = False
+
 
     @nn.nowrap
     @classmethod
@@ -39,9 +41,9 @@ class Propagator(nn.Module):
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(trial_wfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
-        mfrdm = calc_rdm(trial_wfn, trial_wfn) if mf_subtract else None
+        mfwfn = trial_wfn if mf_subtract else None
         return cls(init_hmf, init_vhs, init_enuc, 
-            init_tsteps=init_tsteps, mfshift_rdm=mfrdm, **init_kwargs)
+            init_tsteps=init_tsteps, mfshift_wfn=mfwfn, **init_kwargs)
 
     @nn.nowrap
     def fields_shape(self):
@@ -88,9 +90,11 @@ class Propagator(nn.Module):
         else:
             AuxFieldCls = AuxFieldNet
             network_args = ensure_mapping(self.aux_network, "hidden_sizes")
+        _trdm = (calc_rdm(self.mfshift_wfn, self.mfshift_wfn) 
+                if self.mfshift_wfn is not None else None)
         _vop = AuxFieldCls(
             self.init_vhs,
-            trial_rdm = self.mfshift_rdm,
+            trial_rdm=_trdm,
             parametrize=_pd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
@@ -111,7 +115,9 @@ class Propagator(nn.Module):
             hmf = self.hmf_ops[ii](_ts_h[ii])
             return self.expm_apply(hmf, wfn), 0.
         def app_v(wfn, ii):
-            vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii])
+            trdm = (calc_rdm(self.mfshift_wfn, unpack_spin(wfn, nelec))
+                if self.dyn_mfshift and self.mfshift_wfn is not None else None)
+            vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii], trdm=trdm)
             return self.expm_apply(vhs, wfn), lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
@@ -128,6 +134,8 @@ class Propagator(nn.Module):
             log_weight += ldh + ldv + ldn
         wfn, ldh = app_h(wfn, -1)
         log_weight += ldh
+        # resolve the sign in the log
+        wfn *= jnp.exp(log_weight.imag * 1j / sum(nelec))
         # split different spin part
         wfn = unpack_spin(wfn, nelec)
         # return both the wave function matrix and the log of scalar part
