@@ -48,9 +48,11 @@ class AuxField(nn.Module):
     def __call__(self, step, fields, trdm=None):
         vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields ** 2).sum()
-        trdm = lax.stop_gradient(trdm) if trdm is not None else self.trial_rdm
+        if self.trial_rdm is not None:
+            vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
+            fields += step * vbar0
         if trdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, trdm)
+            vhs, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
             fields += fshift
             log_weight += 0.5 * (fshift ** 2).sum()
@@ -95,9 +97,11 @@ class AuxFieldNet(AuxField):
         tmp = self.last_dense(tmp)
         log_weight -= tmp[-1]
         nfields = fields[:self.nhs] + tmp[:-1]
-        trdm = lax.stop_gradient(trdm) if trdm is not None else self.trial_rdm
+        if self.trial_rdm is not None:
+            vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
+            nfields += step * vbar0
         if trdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, trdm)
+            vhs, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
             nfields += fshift
             log_weight += 0.5 * (fshift ** 2).sum()
@@ -112,6 +116,7 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
     nelec = lax.stop_gradient(rdm).trace().real
     vbar = jnp.einsum("kpq,pq->k", vhs, rdm)
     if cutoff is not None:
-        vbar = jnp.where(vbar > cutoff, vbar / jnp.abs(vbar) * cutoff, vbar)
+        cutoff *= vbar.shape[-1]
+        vbar = vbar / (jnp.maximum(jnp.linalg.norm(vbar), cutoff) / cutoff)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar
