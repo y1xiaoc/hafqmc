@@ -108,8 +108,7 @@ class Propagator(nn.Module):
         log_weight = self.enuc # + 0.5 * self.nts_v * self.nsite
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
-        _ts_v = 1j * (self.ts_v if self.sqrt_tsvpar else 
-            jnp.sqrt(self.ts_v if self.use_complex else jnp.abs(self.ts_v)))
+        _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
         # step functions in iterative prop
         def app_h(wfn, ii):
             hmf = self.hmf_ops[ii](_ts_h[ii])
