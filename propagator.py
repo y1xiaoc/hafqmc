@@ -121,7 +121,7 @@ class Propagator(nn.Module):
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)
-            if (ii+1) % self.ortho_intvl == 0:
+            if self.ortho_intvl > 0 and (ii+1) % self.ortho_intvl == 0:
                 return orthonormalize(wfn, nelec)
             return wfn, 0.
         # iteratively apply step functions
