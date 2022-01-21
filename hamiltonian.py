@@ -160,11 +160,13 @@ def calc_v0_chol(ceri):
 @jax.tree_util.register_pytree_node_class
 class Hamiltonian(object):
 
-    def __init__(self, h1e, ceri, enuc=0., full_eri=False):
+    def __init__(self, h1e, ceri, enuc, wfn0, aux=None, *, full_eri=False):
         self.h1e = jnp.asarray(h1e)
         self.ceri = jnp.asarray(ceri)
         self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri) if full_eri else None
         self.enuc = enuc
+        self.wfn0 = wfn0
+        self.aux = aux if aux is not None else {}
 
     def calc_e1b(self, rdm):
         return calc_e1b(self.h1e, rdm)
@@ -177,8 +179,10 @@ class Hamiltonian(object):
     calc_slov = staticmethod(calc_slov)
     calc_rdm  = staticmethod(calc_rdm)
 
-    def local_energy(self, bra, ket):
+    def local_energy(self, bra=None, ket=None):
         """the normalized energy from two slater determinants"""
+        bra = bra if bra is not None else self.wfn0
+        ket = ket if ket is not None else self.wfn0
         rdm = calc_rdm(bra, ket)
         return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
 
@@ -197,28 +201,30 @@ class Hamiltonian(object):
         hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
         vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1]) / rdm_t.trace()
         return hmf, vhs, enuc
+    
+    def to_tuple(self):
+        return (self.h1e, self.ceri, self.enuc, self.wfn0, self.aux)
 
     @classmethod
-    def from_pyscf(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None, full_eri=False):
+    def from_pyscf(cls, mol_or_mf,
+                   chol_cut=1e-6, orth_ao=None, full_eri=False, with_cc=False):
         if not hasattr(mol_or_mf, "mo_coeff"):
-            mf = mol_or_mf.HF()
+            mf = mol_or_mf.HF().run()
         else:
             mf = mol_or_mf
-        return cls(*integrals_from_scf(mf, 
-            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao), full_eri=full_eri)
-
-    @classmethod
-    def from_pyscf_with_wfn(cls, mol_or_mf, chol_cut=1e-6, orth_ao=None, full_eri=False):
-        if not hasattr(mol_or_mf, "mo_coeff"):
-            mf = mol_or_mf.HF()
+        if with_cc:
+            assert orth_ao is None, "only support MO basis for CCSD amplitudes"
+            mcc = with_cc if hasattr(with_cc, "t1") else mf.CCSD().run()
+            aux = {"cc_t1": mcc.t1, "cc_t2": mcc.t2}
         else:
-            mf = mol_or_mf
-        hamil = cls.from_pyscf(mf, chol_cut, orth_ao, full_eri)
-        wfn = initwfn_from_scf(mf, orth_ao)
-        return hamil, wfn
+            aux = {}
+        ints = integrals_from_scf(mf, 
+            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao)
+        wfn0 = initwfn_from_scf(mf, orth_ao)
+        return cls(*ints, wfn0, aux, full_eri=full_eri)
     
     def tree_flatten(self):
-        fields = ("h1e", "ceri", "enuc", "_eri")
+        fields = ("h1e", "ceri", "enuc", "_eri", "wfn0", "aux")
         children = tuple(getattr(self, f) for f in fields)
         return (children, fields)
     

@@ -22,9 +22,9 @@ class Ansatz(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, init_wfn, propagators=None, **kwargs):
+    def create(cls, hamiltonian, propagators=None, **kwargs):
         if propagators is None:
-            ansatz_props = [Propagator.create(hamiltonian, init_wfn, **kwargs)]
+            ansatz_props = [Propagator.create(hamiltonian, **kwargs)]
             ansatz_kwargs = dict(
                 wfn_param = parse_bool("wfn", kwargs['parametrize']),
                 wfn_random = kwargs['init_random'],
@@ -35,10 +35,10 @@ class Ansatz(nn.Module):
             ansatz_kwargs = kwargs
             ansatz_props = []
             for popt in propagators:
-                prop = (Propagator.create(hamiltonian, init_wfn, **popt) 
+                prop = (Propagator.create(hamiltonian, **popt) 
                         if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
-        return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
+        return cls(hamiltonian.wfn0, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self):

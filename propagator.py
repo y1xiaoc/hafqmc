@@ -21,7 +21,6 @@ class Propagator(nn.Module):
     init_enuc : float
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
-    extra_field : int = 0
     expm_option : Union[str, tuple] = ()
     parametrize : Union[bool, str, Sequence[str]] = True
     timevarying : Union[bool, str, Sequence[str]] = False
@@ -36,19 +35,20 @@ class Propagator(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, trial_wfn, init_tsteps, *, 
+    def create(cls, hamiltonian, init_tsteps, *, 
                max_nhs=None, mf_subtract=False, **init_kwargs):
-        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(trial_wfn)
+        twfn = hamiltonian.wfn0
+        init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
-        mfwfn = trial_wfn if mf_subtract else None
+        mfwfn = twfn if mf_subtract else None
         return cls(init_hmf, init_vhs, init_enuc, 
             init_tsteps=init_tsteps, mfshift_wfn=mfwfn, **init_kwargs)
 
     @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
-        nfield = self.init_vhs.shape[0] + self.extra_field
+        nfield = self.init_vhs.shape[0]
         return onp.array((nts, nfield))
 
     def setup(self):

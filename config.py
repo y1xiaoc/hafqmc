@@ -6,7 +6,6 @@ def default_prop() -> ConfigDict:
         "max_nhs": None,
         "init_tsteps": [0.01]*10,
         "ortho_intvl": 0,
-        "extra_field": 0,
         "expm_option": ["scan", 6, 1],
         "parametrize": "all",
         "timevarying": "hmf",
@@ -37,6 +36,7 @@ def default() -> ConfigDict:
             "chol_cut": 1e-6,
             "orth_ao": None,
             "full_eri": False,
+            "with_cc": False,
         },
         "ansatz":{
             "propagators":[default_prop()],

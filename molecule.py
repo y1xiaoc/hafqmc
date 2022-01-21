@@ -83,7 +83,7 @@ def initwfn_from_scf(mf, orth_ao=None):
 def build_mf(verbose=0, **mol_args):
     from pyscf import gto
     scf_args = mol_args.pop("scf", {})
-    use_uhf = mol_args.pop("unrestricted", True)
+    use_uhf = mol_args.pop("unrestricted", False)
     mol = gto.M(dump_input=False, parse_arg=False, verbose=verbose, **mol_args)
     mf = mol.UHF() if use_uhf else mol.HF()
     mf = mf.set(**scf_args).run()

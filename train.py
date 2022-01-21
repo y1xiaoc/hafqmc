@@ -124,19 +124,18 @@ def train(cfg: ConfigDict):
         print(f"# HF energy from pyscf calculation: {mf.e_tot}")
         if not mf.converged:
             logging.warning("HF calculation does not converge!")
-        hamiltonian, init_wfn = Hamiltonian.from_pyscf_with_wfn(mf, **cfg.hamiltonian)
-        save_pickle(cfg.log.hamil_path, 
-            (hamiltonian.h1e, hamiltonian.ceri, hamiltonian.enuc, init_wfn))
+        hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
+        save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logging.info("Loading Hamiltonian from saved file")
-        h1e, ceri, enuc, init_wfn = load_pickle(cfg.restart.hamiltonian)
-        hamiltonian = Hamiltonian(h1e, ceri, enuc, cfg.hamiltonian.full_eri)
-        print(f"# HF energy from loaded: {hamiltonian.local_energy(init_wfn, init_wfn)}")
+        hamil_data = load_pickle(cfg.restart.hamiltonian)
+        hamiltonian = Hamiltonian(*hamil_data, full_eri=cfg.hamiltonian.full_eri)
+        print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
 
     # set up all other classes and functions
     logging.info("Setting up the training loop")
-    ansatz = Ansatz.create(hamiltonian, init_wfn, **cfg.ansatz)
-    trial = (Ansatz.create(hamiltonian, init_wfn, **cfg.trial) 
+    ansatz = Ansatz.create(hamiltonian, **cfg.ansatz)
+    trial = (Ansatz.create(hamiltonian, **cfg.trial) 
              if cfg.trial is not None else None)
     braket = BraKet(ansatz, trial)
     sampler_1s_1c = make_sampler(braket, 
