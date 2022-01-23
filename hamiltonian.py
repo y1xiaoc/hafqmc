@@ -201,6 +201,24 @@ class Hamiltonian(object):
         hmf = hmf_raw + jnp.einsum('kpq,k->pq', vhs_raw, vbar)
         vhs = vhs_raw - vbar.reshape(-1,1,1) * jnp.eye(vhs_raw.shape[-1]) / rdm_t.trace()
         return hmf, vhs, enuc
+
+    def make_ccsd_op(self):
+        """generate hmf, vhs and corresponding masks from ccsd amps"""
+        if "cc_t1" not in self.aux:
+            raise ValueError("cc data not found in hamiltonian")
+        t1, t2 = self.aux["cc_t1"], self.aux["cc_t2"]
+        t1 = t1[0] if isinstance(t1, tuple) else t1
+        t2 = t2[0] if isinstance(t2, tuple) else t2
+        nocc, nvir = t1.shape
+        noxv = nocc * nvir
+        nbas = nocc + nvir
+        hmf = jnp.zeros((nbas, nbas)).at[nocc:, :nocc].set(t1.swapaxes(0,1))
+        evs, vecs = jnp.linalg.eigh(t2.swapaxes(1,2).reshape(noxv, noxv))
+        tmpv = (jnp.sqrt(evs + 0j) * vecs).T.reshape(noxv, nocc, nvir)
+        vhs = jnp.zeros((noxv, nbas, nbas), tmpv.dtype)
+        vhs = vhs.at[:, nocc:, :nocc].set(tmpv.swapaxes(-1, -2))
+        mask = jnp.zeros((nbas, nbas), bool).at[nocc:, :nocc].set(True)
+        return hmf, vhs, mask
     
     def to_tuple(self):
         return (self.h1e, self.ceri, self.enuc, self.wfn0, self.aux)

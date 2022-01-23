@@ -24,19 +24,27 @@ class Propagator(nn.Module):
     expm_option : Union[str, tuple] = ()
     parametrize : Union[bool, str, Sequence[str]] = True
     timevarying : Union[bool, str, Sequence[str]] = False
+    use_complex : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     init_random : float = 0.
     hermite_ops : bool = False
     sqrt_tsvpar : bool = False
-    use_complex : bool = False
     mfshift_wfn : Optional[Tuple[ndarray, ndarray]] = None
     dyn_mfshift : bool = False
-
+    priori_mask : Optional[ndarray] = None
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, init_tsteps, *, 
-               max_nhs=None, mf_subtract=False, **init_kwargs):
+    def create(cls, hamiltonian, type="normal", **kwargs):
+        if type.lower() in ("cc", "ccsd"):
+            return cls.create_ccsd(hamiltonian, **kwargs)
+        else:
+            return cls.create_normal(hamiltonian, **kwargs)
+
+    @nn.nowrap
+    @classmethod
+    def create_normal(cls, hamiltonian, init_tsteps, *, 
+                      max_nhs=None, mf_subtract=False, **init_kwargs):
         twfn = hamiltonian.wfn0
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
         if max_nhs is not None:
@@ -44,7 +52,25 @@ class Propagator(nn.Module):
         mfwfn = twfn if mf_subtract else None
         return cls(init_hmf, init_vhs, init_enuc, 
             init_tsteps=init_tsteps, mfshift_wfn=mfwfn, **init_kwargs)
-
+    
+    @nn.nowrap
+    @classmethod
+    def create_ccsd(cls, hamiltonian, *, 
+                    with_mask=True, use_complex=False,
+                    expm_option=(), mf_subtract=False, **init_kwargs):
+        init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
+        if with_mask:
+            expm_option = ("loop", 1, 1)
+        else:
+            mask = None
+        _cd = parse_bool(("hmf", "tsteps"), use_complex)
+        use_complex = "vhs" + ",".join(k for k in _cd if _cd[k])
+        mfwfn = hamiltonian.wfn0 if mf_subtract else None
+        return cls(init_hmf, init_vhs, 0, init_tsteps=[-1.], 
+            expm_option=expm_option, use_complex=use_complex,
+            hermite_ops=False, aux_network=None, sqrt_tsvpar=False,
+            priori_mask=mask, mfshift_wfn=mfwfn, **init_kwargs)
+            
     @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
@@ -57,7 +83,9 @@ class Propagator(nn.Module):
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
         self.expm_apply = make_expm_apply(*_expm_op)
         # decide whether to make quantities changeable / parametrized in complex
-        _dtype = _t_cplx if self.use_complex else _t_real
+        _ifcplx = lambda t: _t_cplx if t else _t_real
+        _td = {k: _ifcplx(v) for k, v in 
+               parse_bool(("hmf", "vhs", "tsteps"), self.use_complex).items()}
         _pd = parse_bool(("hmf", "vhs", "enuc", "tsteps"), self.parametrize)
         _vd = parse_bool(("hmf", "vhs"), self.timevarying)
         # handle the time steps, for Hmf and Vhs separately
@@ -65,22 +93,29 @@ class Propagator(nn.Module):
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
         if self.sqrt_tsvpar:
             _ts_v = jnp.sqrt(_ts_v if self.use_complex else jnp.abs(_ts_v))
-        self.ts_v = (self.param("ts_v", fix_init, _ts_v, _dtype) 
+        self.ts_v = (self.param("ts_v", fix_init, _ts_v, _td["tsteps"]) 
                      if _pd["tsteps"] else _ts_v)
-        self.ts_h = (self.param("ts_h", fix_init, _ts_h, _dtype) 
+        self.ts_h = (self.param("ts_h", fix_init, _ts_h, _td["tsteps"]) 
                      if _pd["tsteps"] else _ts_h)
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
         # core energy, should be useless
         self.enuc = (self.param("enuc", fix_init, self.init_enuc, _t_real) 
                      if _pd["enuc"] else self.init_enuc)
+        # operator prioir masks
+        if self.priori_mask is None:
+            self.hmask = self.vmask = 1
+        elif len(self.priori_mask) == 2:
+            self.hmask, self.vmask = self.priori_mask
+        else:
+            self.hmask = self.vmask = self.priori_mask
         # build Hmf operator
         _hop = OneBody(
             self.init_hmf, 
             parametrize=_pd["hmf"], 
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
-            dtype=_dtype)
+            dtype=_td["hmf"])
         self.hmf_ops = [_hop.clone() if _vd["hmf"] else _hop 
                         for _ in range(self.nts_h)]
         # build Vhs operator
@@ -98,7 +133,7 @@ class Propagator(nn.Module):
             parametrize=_pd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
-            dtype=_dtype,
+            dtype=_td["vhs"],
             **network_args)
         self.vhs_ops = [_vop.clone() if _vd["vhs"] else _vop 
                         for _ in range(self.nts_v)]
@@ -112,12 +147,12 @@ class Propagator(nn.Module):
         # step functions in iterative prop
         def app_h(wfn, ii):
             hmf = self.hmf_ops[ii](_ts_h[ii])
-            return self.expm_apply(hmf, wfn), 0.
+            return self.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
             trdm = (calc_rdm(self.mfshift_wfn, unpack_spin(wfn, nelec))
                 if self.dyn_mfshift and self.mfshift_wfn is not None else None)
             vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii], trdm=trdm)
-            return self.expm_apply(vhs, wfn), lw
+            return self.expm_apply(vhs * self.vmask, wfn), lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)

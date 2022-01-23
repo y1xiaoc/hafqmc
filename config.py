@@ -1,24 +1,43 @@
 from ml_collections import ConfigDict, config_dict
 
 
-def default_prop() -> ConfigDict:
+def default_prop(with_net=False) -> ConfigDict:
+    net_dict = {
+        "hidden_sizes": [-1, -1, -1],
+        "actv_fun": "gelu",
+        "zero_init": True,
+        }
     return ConfigDict({
         "max_nhs": None,
-        "init_tsteps": [0.01]*10,
+        "init_tsteps": [0.01]*5,
         "ortho_intvl": 0,
         "expm_option": ["scan", 6, 1],
         "parametrize": "all",
         "timevarying": "hmf",
-        "aux_network": {
-            "hidden_sizes": [-1, -1, -1],
-            "actv_fun": "gelu",
-            "zero_init": True,
-        },
+        "aux_network": net_dict if with_net else None,
         "init_random": 0.,
         "use_complex": False,
         "sqrt_tsvpar": False,
         "hermite_ops": False,
         "mf_subtract": False,
+        "dyn_mfshift": False,
+        "priori_mask": None,
+    }, 
+    type_safe=False, convert_dict=True)
+
+
+def ccsd_prop() -> ConfigDict:
+    return ConfigDict({
+        "type": "ccsd",
+        "with_mask": True,
+        "ortho_intvl": 0,
+        "expm_option": ["scan", 1, 1],
+        "parametrize": False,
+        "timevarying": False,
+        "init_random": 0.,
+        "use_complex": False,
+        "mf_subtract": False,
+        "dyn_mfshift": False,
     }, 
     type_safe=False, convert_dict=True)
 
@@ -115,15 +134,13 @@ def example() -> ConfigDict:
     return cfg
 
 
-def example_test() -> ConfigDict:
-    cfg = example()
+def make_test(cfg) -> ConfigDict:
     cfg.trial = {
         "propagators": [],
         "wfn_param": False,
         "wfn_random": 0.,
         "wfn_complex": False,
     }
-    cfg.optim.iteration = 10_000
     cfg.optim.lr.start = 0.
     return cfg
     
