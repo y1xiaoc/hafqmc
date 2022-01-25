@@ -41,8 +41,9 @@ class Ansatz(nn.Module):
         return cls(hamiltonian.wfn0, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
-    def fields_shape(self):
-        return tuple(p.fields_shape() for p in self.propagators)
+    def fields_shape(self, max_prop=None):
+        nprop = len(self.propagators) if max_prop is None else max_prop
+        return tuple(p.fields_shape() for p in self.propagators[:nprop])
 
     def setup(self):
         wfn = self.init_wfn 
@@ -57,7 +58,7 @@ class Ansatz(nn.Module):
         if isinstance(fields, ndarray):
             fields = (fields,)
         assert (jax.tree_map(jnp.shape, fields) 
-                == jax.tree_map(tuple, self.fields_shape()))
+                == jax.tree_map(tuple, self.fields_shape(len(fields))))
         wfn = self.wfn
         log_weight = 0.
         if keep_last > 0:
@@ -78,13 +79,15 @@ class BraKet(nn.Module):
     trial : Optional[Ansatz] = None
 
     @nn.nowrap
-    def fields_shape(self):
+    def fields_shape(self, max_prop=None):
+        lmp, rmp = (max_prop if isinstance(max_prop, (tuple, list))
+                    else max_prop, max_prop)
         if self.trial is None:
             return jax.tree_map(lambda s: onp.array((2, *s)), 
-                    self.ansatz.fields_shape())
+                    self.ansatz.fields_shape(rmp))
         else:
-            return (self.trial.fields_shape(), 
-                    self.ansatz.fields_shape())
+            return (self.trial.fields_shape(lmp), 
+                    self.ansatz.fields_shape(rmp))
 
     def __call__(self, fields, *, keep_last=0):
         if self.trial is None:

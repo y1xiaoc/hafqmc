@@ -101,7 +101,8 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
         fields, logsw = data
         if isinstance(fields, jnp.ndarray):
             fields = (fields,)
-        fshape = braket.fields_shape()
+        fshape = braket.fields_shape(len(fields) if braket.trial is None
+                                     else tuple(map(len, fields)))
         # _f0 and _fs0 are just for checking the shape
         _f0 = jax.tree_leaves(fields)[0]
         _fs0 = jax.tree_leaves(fshape)[0]
