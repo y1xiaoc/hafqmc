@@ -33,9 +33,10 @@ class MCSampler(NamedTuple):
         return lax.scan(inner, state, jax.random.split(key, steps))[0]
 
 
-def make_sampler(braket: BraKet, name: str, beta=1., smear=None, **kwargs):
+def make_sampler(braket: BraKet, name: str, 
+                 max_prop=None, beta=1., smear=None, **kwargs):
     maker = choose_sampler_maker(name)
-    fields_shape = braket.fields_shape()
+    fields_shape = braket.fields_shape(max_prop)
     # logdens_fn = lambda p, x: beta * braket.apply(p, x, method=braket.sign_logov)[1]
     def logdens_fn(p, x):
         sign, logd = braket.apply(p, x, method=braket.sign_logov)

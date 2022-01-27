@@ -73,6 +73,7 @@ def default() -> ConfigDict:
             },
             "batch": 1_000,
             "burn_in": 1_000,
+            "prop_steps": None,
         },
         "loss": {
             "step_weights": None,

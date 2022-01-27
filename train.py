@@ -115,6 +115,7 @@ def train(cfg: ConfigDict):
         logging.warning("Sample size not divisible by batch size, rounding up")
     sample_step = -(-sample_size // sample_batch)
     sample_size = sample_batch * sample_step
+    sample_prop = cfg.sample.prop_steps
     eval_batch = cfg.optim.batch if cfg.optim.batch is not None else sample_batch
     eval_mstep = jnp.size(cfg.loss.step_weights) if cfg.loss.get("step_weights") is not None else 0
     if sample_size % eval_batch != 0:
@@ -142,8 +143,14 @@ def train(cfg: ConfigDict):
     trial = (Ansatz.create(hamiltonian, **cfg.trial) 
              if cfg.trial is not None else None)
     braket = BraKet(ansatz, trial)
-    sampler_1s_1c = make_sampler(braket, 
-        **ensure_mapping(cfg.sample.sampler, default_key="name"))
+    if sample_prop is None or isinstance(sample_prop, int):
+        sampler_1s_1c = make_sampler(braket, max_prop=sample_prop,
+            **ensure_mapping(cfg.sample.sampler, default_key="name"))
+    else:
+        sampler_1s_1c = SamplerUnion({
+            mp: make_sampler(braket, max_prop=mp,
+                **ensure_mapping(cfg.sample.sampler, default_key="name"))
+            for mp in sample_prop})
     sampler_1s_nc = make_batched(sampler_1s_1c, sample_batch, concat=False)
     mc_sampler = make_multistep(sampler_1s_nc, sample_step, concat=True)
     lr_schedule = make_lr_schedule(**cfg.optim.lr)
@@ -189,11 +196,16 @@ def train(cfg: ConfigDict):
     printer.print_header(prefix="# ")
     for ii in range(total_iter + 1):
         printer.reset_timer()
+        sflag = None
+        if not (sample_prop is None or isinstance(sample_prop, int)):
+            key, flagkey = jax.random.split(key)
+            sflag = sample_prop[jax.random.choice(flagkey, len(sample_prop))]
         key, subkey = jax.random.split(key)
         (params, mc_state, opt_state), (loss, aux) = \
-            train_step(subkey, params, mc_state, opt_state)
+            train_step(subkey, params, mc_state, opt_state, sample_flag=sflag)
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
+            if sflag is not None: aux["nprop"] = sflag
             _lr = lr_schedule(opt_state[-1][0].count) if callable(lr_schedule) else lr_schedule
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
             writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
