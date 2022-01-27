@@ -11,7 +11,7 @@ from .molecule import build_mf
 from .hamiltonian import Hamiltonian
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
-from .sampler import make_sampler, make_multistep, make_batched
+from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
 
 
@@ -64,23 +64,27 @@ def make_loss(expect_fn, step_weights=None,
 
 
 def make_training_step(loss_and_grad, mc_sampler, optimizer):
+    is_union = isinstance(mc_sampler, SamplerUnion)
 
-    def step(key, params, mc_state, opt_state):
-        mc_state, data = mc_sampler.sample(key, params, mc_state)
+    def step(key, params, mc_state, opt_state, sample_flag=None):
+        sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
+        mc_state = sampler.refresh(mc_state, params)
+        mc_state, data = sampler.sample(key, params, mc_state)
         (loss, aux), grads = loss_and_grad(params, data)
         grads = jax.tree_map(jnp.conj, grads) # for complex parameters
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
-        mc_state = mc_sampler.refresh(mc_state, params)
         return (params, mc_state, opt_state), (loss, aux)
 
     return step
 
 
 def make_evaluation_step(expect_fn, mc_sampler):
+    is_union = isinstance(mc_sampler, SamplerUnion)
     
-    def step(key, params, mc_state, extras=None):
-        mc_state, data = mc_sampler.sample(key, params, mc_state)
+    def step(key, params, mc_state, extras=None, sample_flag=None):
+        sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
+        mc_state, data = sampler.sample(key, params, mc_state)
         e_tot, aux = expect_fn(params, data)
         return (params, mc_state, extras), (e_tot, aux)
     
@@ -155,7 +159,7 @@ def train(cfg: ConfigDict):
         train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
     else:
         train_step = make_evaluation_step(expect_fn, mc_sampler)
-    train_step = jax.jit(train_step)
+    train_step = jax.jit(train_step, static_argnames="sample_flag")
     
     # set up all states
     if cfg.restart.states is None:
@@ -174,9 +178,8 @@ def train(cfg: ConfigDict):
         opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
             logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
-            for ii in range(cfg.sample.burn_in):
-                key, subkey = jax.random.split(key)
-                mc_state, _ = jax.jit(sampler_1s_nc.sample)(subkey, params, mc_state)
+            key, subkey = jax.random.split(key)
+            mc_state = sampler_1s_nc.burn_in(subkey, params, mc_state, cfg.sample.burn_in)
     else:
         logging.info("Loading parameters and states from saved file")
         key, params, mc_state, opt_state = load_pickle(cfg.restart.states)
@@ -187,7 +190,8 @@ def train(cfg: ConfigDict):
     for ii in range(total_iter + 1):
         printer.reset_timer()
         key, subkey = jax.random.split(key)
-        (params, mc_state, opt_state), (loss, aux) = train_step(subkey, params, mc_state, opt_state)
+        (params, mc_state, opt_state), (loss, aux) = \
+            train_step(subkey, params, mc_state, opt_state)
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             _lr = lr_schedule(opt_state[-1][0].count) if callable(lr_schedule) else lr_schedule

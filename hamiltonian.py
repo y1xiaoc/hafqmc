@@ -158,7 +158,7 @@ def calc_v0_chol(ceri):
 
 
 @jax.tree_util.register_pytree_node_class
-class Hamiltonian(object):
+class Hamiltonian:
 
     def __init__(self, h1e, ceri, enuc, wfn0, aux=None, *, full_eri=False):
         self.h1e = jnp.asarray(h1e)

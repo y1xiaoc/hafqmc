@@ -1,12 +1,36 @@
 import jax
 from jax import lax
 from jax import numpy as jnp
+import dataclasses
 from functools import partial
-from typing import NamedTuple, Callable, Tuple
+from typing import NamedTuple, Callable, Tuple, Union, Dict
 
 from .ansatz import BraKet
 from .utils import PyTree, Array
 from .utils import ravel_shape, tree_where
+
+
+KeyArray = Array
+Params = PyTree
+State = PyTree
+Data = PyTree
+Flag = Union[int, str]
+Sampler = Union["MCSampler", "SamplerUnion"]
+
+
+class MCSampler(NamedTuple):
+    sample: Callable[[KeyArray, Params, State], Tuple[State, Data]]
+    init: Callable[[KeyArray, Params], State]
+    refresh: Callable[[State, Params], State]
+
+    def __call__(self, key: KeyArray, params: Params, state: State):
+        """Call the sample function. See `self.sample` for details."""
+        return self.sample(key, params, state)
+
+    def burn_in(self, key: KeyArray, params: Params, state: State, steps: int):
+        """Burn in the state for given steps"""
+        inner = jax.jit(lambda s,k: (self.sample(k, params, s)[0], None))
+        return lax.scan(inner, state, jax.random.split(key, steps))[0]
 
 
 def make_sampler(braket: BraKet, name: str, beta=1., smear=None, **kwargs):
@@ -22,7 +46,7 @@ def make_sampler(braket: BraKet, name: str, beta=1., smear=None, **kwargs):
     return maker(logdens_fn, fields_shape, **kwargs)
     
 
-def choose_sampler_maker(name: str) -> Callable[..., "MCSampler"]:
+def choose_sampler_maker(name: str) -> Callable[..., MCSampler]:
     name = name.lower()
     if name in ("direct", "gaussian"):
         return make_gaussian
@@ -37,24 +61,47 @@ def choose_sampler_maker(name: str) -> Callable[..., "MCSampler"]:
     raise NotImplementedError(f"unsupported sampler type: {name}")
 
 
-def make_multistep_fn(sample_fn, nstep, concat=False):
-    def multi_sample(key, params, state):
-        inner = lambda s,k: sample_fn(k, params, s)
-        keys = jax.random.split(key, nstep)
-        new_state, data = lax.scan(inner, state, keys)
-        if concat:
-            data = jax.tree_map(jnp.concatenate, data)
-        return new_state, data
-    return multi_sample
+##### Below are sampler transformations #####
+
+@dataclasses.dataclass(frozen=True)
+class SamplerUnion:
+    choices : Dict[Flag, MCSampler]
+
+    def init(self, key: KeyArray, params: Params):
+        return {f: s.init(key, params) for f, s in self.choices.items()}
+
+    def switch(self, flag: Flag):
+        return warp_by_flag(self.choices[flag], flag)
+    
+    def burn_in(self, key: KeyArray, params: Params, state: State, steps: int):
+        for flag in self.choices.keys():
+            state = self.switch(flag).burn_in(key, params, state, steps)
+        return state
 
 
-def make_multistep(sampler: "MCSampler", nstep: int, concat: bool = False):
-    sample_fn, init_fn, refresh_fn = sampler
-    multisample_fn = make_multistep_fn(sample_fn, nstep, concat)
-    return MCSampler(multisample_fn, init_fn, refresh_fn)
+def warp_by_flag(sampler: MCSampler, flag: Flag):
+    def sample(key, params, state):
+        raw_state, data = sampler.sample(key, params, state[flag])
+        return {**state, flag: raw_state}, data
+    init = lambda k, p: {flag: sampler.init(k, p)}
+    refresh = lambda s, p: {**s, flag: sampler.refresh(s[flag], p)}
+    return MCSampler(sample, init, refresh)
 
 
-def make_batched(sampler: "MCSampler", nbatch: int, concat: bool = False):
+def union_elevate(transform):
+    from functools import wraps
+    @wraps(transform)
+    def elevated(sampler: Sampler, *args, **kwargs):
+        if isinstance(sampler, SamplerUnion):
+            return SamplerUnion({k: transform(v, *args, **kwargs)
+                for k, v in sampler.choices.items()})
+        else:
+            return transform(sampler, *args, **kwargs)
+    return elevated
+
+
+@union_elevate
+def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
     sample_fn, init_fn, refresh_fn = sampler
     def sample(key, params, state):
         vkey = jax.random.split(key, nbatch)
@@ -69,58 +116,25 @@ def make_batched(sampler: "MCSampler", nbatch: int, concat: bool = False):
     return MCSampler(sample, init, refresh)
 
 
-KeyArray = Array
-Params = PyTree
-State = PyTree
-Data = PyTree
-class MCSampler(NamedTuple):
-    sample: Callable[[KeyArray, Params, State], Tuple[State, Data]]
-    init: Callable[[KeyArray, Params], State]
-    refresh: Callable[[State, Params], State]
-    def __call__(self, key: KeyArray, params: Params, state: State):
-        """Call the sample function. See `self.sample` for details."""
-        return self.sample(key, params, state)
-    create = staticmethod(make_sampler)
+@union_elevate
+def make_multistep(sampler: Sampler, nstep: int, concat: bool = False):
+    sample_fn, init_fn, refresh_fn = sampler
+    multisample_fn = make_multistep_fn(sample_fn, nstep, concat)
+    return MCSampler(multisample_fn, init_fn, refresh_fn)
 
 
-def logd_gaussian(x, mu=0., sigma=1.):
-    """unnormalized log density of Gaussian distribution"""
-    return -0.5 * ((x - mu) / sigma) ** 2
+def make_multistep_fn(sample_fn, nstep, concat=False):
+    def multi_sample(key, params, state):
+        inner = lambda s,k: sample_fn(k, params, s)
+        keys = jax.random.split(key, nstep)
+        new_state, data = lax.scan(inner, state, keys)
+        if concat:
+            data = jax.tree_map(jnp.concatenate, data)
+        return new_state, data
+    return multi_sample
 
 
-def mh_select(key, ratio, state1, state2):
-    rnd = jnp.log(jax.random.uniform(key, shape=ratio.shape))
-    cond = ratio > rnd
-    new_state = tree_where(cond, state2, state1)
-    return new_state, cond
-
-
-def make_leapfrog(potential_fn, dt, steps, with_carry=True):
-    pot_and_grad = jax.value_and_grad(potential_fn)
-
-    def leapfrog_carry(q, p, g, v):
-        # p for momentom and q for position
-        # f for force and v for potential
-        # simple Euler integration step
-        def int_step(carry, _):
-            q, p = carry
-            q += dt * p
-            p -= dt * pot_and_grad(q)[1]
-            return (q, p), None
-        # leapfrog by shifting half step
-        p -= 0.5 * dt * g # first half p
-        (q, p), _ = lax.scan(int_step, (q, p), None, length=steps-1)
-        q += dt * p # final whole step update of q
-        v, g = pot_and_grad(q) 
-        p -= 0.5 * dt * g # final half p
-        return q, p, g, v
-
-    def leapfrog_nocarry(q, p):
-        v, g = pot_and_grad(q)
-        return leapfrog_carry(q, p, g, v)[:2]
-
-    return leapfrog_carry if with_carry else leapfrog_nocarry
-
+##### Below are generation functions for different samplers #####
 
 def make_gaussian(logdens_fn, fields_shape, mu=0., sigma=1., truncate=None):
     fsize, unravel = ravel_shape(fields_shape)
@@ -270,3 +284,44 @@ def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
         return kmodule.new_state(fields, logprob_fn)
 
     return MCSampler(sample, init, refresh)
+
+
+##### Below are helper functions for samplers #####
+
+def logd_gaussian(x, mu=0., sigma=1.):
+    """unnormalized log density of Gaussian distribution"""
+    return -0.5 * ((x - mu) / sigma) ** 2
+
+
+def mh_select(key, ratio, state1, state2):
+    rnd = jnp.log(jax.random.uniform(key, shape=ratio.shape))
+    cond = ratio > rnd
+    new_state = tree_where(cond, state2, state1)
+    return new_state, cond
+
+
+def make_leapfrog(potential_fn, dt, steps, with_carry=True):
+    pot_and_grad = jax.value_and_grad(potential_fn)
+
+    def leapfrog_carry(q, p, g, v):
+        # p for momentom and q for position
+        # f for force and v for potential
+        # simple Euler integration step
+        def int_step(carry, _):
+            q, p = carry
+            q += dt * p
+            p -= dt * pot_and_grad(q)[1]
+            return (q, p), None
+        # leapfrog by shifting half step
+        p -= 0.5 * dt * g # first half p
+        (q, p), _ = lax.scan(int_step, (q, p), None, length=steps-1)
+        q += dt * p # final whole step update of q
+        v, g = pot_and_grad(q) 
+        p -= 0.5 * dt * g # final half p
+        return q, p, g, v
+
+    def leapfrog_nocarry(q, p):
+        v, g = pot_and_grad(q)
+        return leapfrog_carry(q, p, g, v)[:2]
+
+    return leapfrog_carry if with_carry else leapfrog_nocarry
