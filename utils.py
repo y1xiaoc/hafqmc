@@ -19,40 +19,50 @@ Array = jnp.ndarray
 PyTree = Any
 
 
-def wrap_if_pmap(p_func):
+def _T(x): 
+    return jnp.swapaxes(x, -1, -2)
 
-    def p_func_if_pmap(obj, axis_name):
-        try:
-            jax.core.axis_frame(axis_name)
-            return p_func(obj, axis_name)
-        except NameError:
-            return obj
-
-    return p_func_if_pmap
+def _H(x): 
+    return jnp.conj(_T(x))
 
 
-pmax_if_pmap = wrap_if_pmap(lax.pmax)
-pmin_if_pmap = wrap_if_pmap(lax.pmin)
-psum_if_pmap = wrap_if_pmap(lax.psum)
-pmean_if_pmap = wrap_if_pmap(lax.pmean)
+def symmetrize(x): 
+    return (x + _H(x)) / 2
 
 
-@dataclasses.dataclass(frozen=True)
-class PAxis:
-    name  : str
-    def __post_init__(self):
-        for nm, fn in (("vmap", jax.vmap), ("pmap", jax.pmap),
-                       ("pmax", pmax_if_pmap), ("pmin", pmin_if_pmap),
-                       ("psum", psum_if_pmap), ("pmean", pmean_if_pmap)):
-            object.__setattr__(self, nm, partial(fn, axis_name=self.name))
-        for nm in ("max", "min", "sum", "mean"):
-            jnp_fn = getattr(jnp, nm)
-            pax_fn = getattr(self, f"p{nm}")
-            all_fn = lambda x: pax_fn(jnp_fn(x))
-            object.__setattr__(self, f"all_{nm}", all_fn)
+def cmult(x1, x2):
+    return ((x1.real * x2.real - x1.imag * x2.imag) 
+        + 1j * (x1.imag * x2.real + x1.real * x2.imag))
 
-PMAP_AXIS_NAME = "_pmap_axis"
-paxis = PAxis(PMAP_AXIS_NAME)
+
+@partial(jax.custom_jvp, nondiff_argnums=(1,))
+def chol_qr(x, shift=None):
+    *_, m, n = x.shape
+    a = _H(x) @ x
+    if shift is None:
+        shift = 1.2e-15 * (m*n + n*(n+1)) * a.trace(0,-1,-2).max()
+    r = jsp.linalg.cholesky(a + shift * jnp.eye(n, dtype=x.dtype), lower=False)
+    q = lax.linalg.triangular_solve(r, x, left_side=False, lower=False)
+    return q, r
+
+@chol_qr.defjvp
+def _chol_qr_jvp(shift, primals, tangents):
+    x, = primals
+    dx, = tangents
+    *_, m, n = x.shape
+    if m < n:
+        raise NotImplementedError("Unimplemented case of QR decomposition derivative")
+    q, r = chol_qr(x, shift=shift)
+    dx_rinv = lax.linalg.triangular_solve(r, dx)
+    qt_dx_rinv = jnp.matmul(_H(q), dx_rinv)
+    qt_dx_rinv_lower = jnp.tril(qt_dx_rinv, -1)
+    do = qt_dx_rinv_lower - _H(qt_dx_rinv_lower)  # This is skew-symmetric
+    # The following correction is necessary for complex inputs
+    I = lax.expand_dims(jnp.eye(n, dtype=do.dtype), range(qt_dx_rinv.ndim - 2))
+    do = do + I * (qt_dx_rinv - jnp.real(qt_dx_rinv))
+    dq = jnp.matmul(q, do - qt_dx_rinv) + dx_rinv
+    dr = jnp.matmul(qt_dx_rinv - do, r)
+    return (q, r), (dq, dr)
 
 
 def make_expm_apply(method="scan", m=6, s=1):
@@ -101,11 +111,6 @@ def make_expm_apply(method="scan", m=6, s=1):
 expm_apply = make_expm_apply("scan", 6, 1)
 
 
-def cmult(x1, x2):
-    return ((x1.real * x2.real - x1.imag * x2.imag) 
-        + 1j * (x1.imag * x2.real + x1.real * x2.imag))
-
-
 def ravel_shape(target_shape):
     from jax.flatten_util import ravel_pytree
     tmp = jax.tree_map(jnp.zeros, target_shape)
@@ -128,10 +133,6 @@ def fix_init(key, value, dtype=None, random=0., rnd_additive=False):
             return value + perturb
         else:
             return value * (1 + perturb)
-
-
-def make_hermite(A):
-    return 0.5 * (A.conj().swapaxes(-1,-2) + A)
 
 
 def pack_spin(wfn):
@@ -157,6 +158,7 @@ def parse_activation(name, **kwargs):
     raw_fn = getattr(nn, name)
     return partial(raw_fn, **kwargs)
 
+
 def parse_bool(keys, inputs):
     if isinstance(keys, str):
         return parse_bool((keys,), inputs)[keys]
@@ -172,6 +174,7 @@ def parse_bool(keys, inputs):
         for key in keys:
             res_dict[key] = key in inputs
     return res_dict
+
 
 def ensure_mapping(obj, default_key="name"):
     try:
@@ -261,3 +264,39 @@ class Printer:
 
     def reset_timer(self):
         self.tick = time.perf_counter()
+
+
+def wrap_if_pmap(p_func):
+
+    def p_func_if_pmap(obj, axis_name):
+        try:
+            jax.core.axis_frame(axis_name)
+            return p_func(obj, axis_name)
+        except NameError:
+            return obj
+
+    return p_func_if_pmap
+
+
+pmax_if_pmap = wrap_if_pmap(lax.pmax)
+pmin_if_pmap = wrap_if_pmap(lax.pmin)
+psum_if_pmap = wrap_if_pmap(lax.psum)
+pmean_if_pmap = wrap_if_pmap(lax.pmean)
+
+
+@dataclasses.dataclass(frozen=True)
+class PAxis:
+    name  : str
+    def __post_init__(self):
+        for nm, fn in (("vmap", jax.vmap), ("pmap", jax.pmap),
+                       ("pmax", pmax_if_pmap), ("pmin", pmin_if_pmap),
+                       ("psum", psum_if_pmap), ("pmean", pmean_if_pmap)):
+            object.__setattr__(self, nm, partial(fn, axis_name=self.name))
+        for nm in ("max", "min", "sum", "mean"):
+            jnp_fn = getattr(jnp, nm)
+            pax_fn = getattr(self, f"p{nm}")
+            all_fn = lambda x: pax_fn(jnp_fn(x))
+            object.__setattr__(self, f"all_{nm}", all_fn)
+
+PMAP_AXIS_NAME = "_pmap_axis"
+paxis = PAxis(PMAP_AXIS_NAME)

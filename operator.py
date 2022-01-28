@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, make_hermite, Serial, cmult
+from .utils import fix_init, symmetrize, Serial, cmult
 
 
 class OneBody(nn.Module):
@@ -24,7 +24,7 @@ class OneBody(nn.Module):
             self.hmf = self.init_hmf
 
     def __call__(self, step):
-        hmf = make_hermite(self.hmf) if self.hermite_out else self.hmf
+        hmf = symmetrize(self.hmf) if self.hermite_out else self.hmf
         hmf = cmult(step, hmf)
         return hmf
 
@@ -46,7 +46,7 @@ class AuxField(nn.Module):
         self.nhs = self.init_vhs.shape[0]
 
     def __call__(self, step, fields, trdm=None):
-        vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
+        vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields ** 2).sum()
         if self.trial_rdm is not None:
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
@@ -89,7 +89,7 @@ class AuxFieldNet(AuxField):
             self.network = None
         
     def __call__(self, step, fields, trdm=None):
-        vhs = make_hermite(self.vhs) if self.hermite_out else self.vhs
+        vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields ** 2).sum()
         tmp = fields
         if self.network is not None:

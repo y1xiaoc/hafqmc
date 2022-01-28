@@ -11,6 +11,7 @@ from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin
 from .utils import make_expm_apply
+from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
 from .hamiltonian import calc_rdm
 
@@ -177,11 +178,12 @@ class Propagator(nn.Module):
 
 
 def orthonormalize_ns(wfn):
-    owfn, rmat = jnp.linalg.qr(wfn)
+    owfn, rmat = chol_qr(wfn)
     rdiag = rmat.diagonal(0,-1,-2)
-    rabs = jnp.abs(rdiag)
-    owfn *= rdiag / rabs
-    logd = jnp.sum(jnp.log(rabs), axis=-1)
+    # chol_qr gaurantees rdiag is real and positive
+    # rabs = jnp.abs(rdiag)
+    # owfn *= rdiag / rabs
+    logd = jnp.sum(jnp.log(rdiag.real), axis=-1)
     return owfn, logd
 
 
