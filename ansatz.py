@@ -81,7 +81,7 @@ class BraKet(nn.Module):
     @nn.nowrap
     def fields_shape(self, max_prop=None):
         lmp, rmp = (max_prop if isinstance(max_prop, (tuple, list))
-                    else max_prop, max_prop)
+                    else (max_prop, max_prop))
         if self.trial is None:
             return jax.tree_map(lambda s: onp.array((2, *s)), 
                     self.ansatz.fields_shape(rmp))
