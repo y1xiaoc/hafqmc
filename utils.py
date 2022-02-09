@@ -5,7 +5,7 @@ from jax import scipy as jsp
 from flax import linen as nn
 from ml_collections import ConfigDict
 from typing import Dict, Sequence, Union, Callable, Any, Optional
-from functools import partial
+from functools import partial, reduce
 import dataclasses
 import pickle
 import time
@@ -17,6 +17,12 @@ _t_cplx = jnp.complex128
 
 Array = jnp.ndarray
 PyTree = Any
+
+
+def compose(*funcs):
+    def c2(f, g):
+        return lambda *a, **kw: f(g(*a, **kw))
+    return reduce(c2, funcs)
 
 
 def _T(x): 
@@ -295,7 +301,7 @@ class PAxis:
         for nm in ("max", "min", "sum", "mean"):
             jnp_fn = getattr(jnp, nm)
             pax_fn = getattr(self, f"p{nm}")
-            all_fn = lambda x: pax_fn(jnp_fn(x))
+            all_fn = compose(pax_fn, jnp_fn)
             object.__setattr__(self, f"all_{nm}", all_fn)
 
 PMAP_AXIS_NAME = "_pmap_axis"
