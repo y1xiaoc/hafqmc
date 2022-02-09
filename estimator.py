@@ -16,7 +16,8 @@ def exp_shifted(x, normalize=None):
         reducer = getattr(paxis, f"all_{normalize.lower()}")
         total = reducer(lax.stop_gradient(exp))
         exp /= total
-    return exp
+        stblz += jnp.log(total)
+    return exp, stblz
 
 
 def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
@@ -116,13 +117,14 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
     def calc_statistics(eloc, sign, logov, logsw):
         logsw = logsw if logsw is not None else logov
         logsw = lax.stop_gradient(logsw)
-        rel_w = exp_shifted(logov - logsw, normalize="mean")
+        rel_w, lshift = exp_shifted(logov - logsw, normalize="mean")
         exp_es = paxis.all_mean((eloc * sign) * rel_w)
         exp_s = paxis.all_mean(sign * rel_w)
         etot = exp_es.real / exp_s.real
         aux_data = {"e_tot": etot, 
                     "exp_es": exp_es.real, 
-                    "exp_s": exp_s.real}
+                    "exp_s": exp_s.real,
+                    "log_shift": lshift}
         if calc_stds:
             tot_w = paxis.all_mean(rel_w) # should be just 1, but provide correct gradient
             var_es = paxis.all_mean(jnp.abs(eloc*sign - exp_es/tot_w)**2 * rel_w) / tot_w
