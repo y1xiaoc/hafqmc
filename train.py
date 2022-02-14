@@ -36,22 +36,13 @@ def make_lr_schedule(start=1e-4, decay=1., delay=1e4):
     return lambda t: start * jnp.power((1.0 / (1.0 + (t/delay))), decay)
 
 
-def make_loss(expect_fn, step_weights=None,
+def make_loss(expect_fn, 
               sign_factor=0., sign_target=1., sign_power=2.,
               std_factor=0., std_target=1., std_power=2):
 
-    if step_weights is None:
-        step_weights = 1.
-    step_weights = jnp.asarray(step_weights).reshape(-1)
-
     def loss(params, data):
         e_tot, aux = expect_fn(params, data)
-        e_tot = jnp.reshape(e_tot, -1)[-step_weights.size:]
-        loss = (e_tot * step_weights[-e_tot.size:]).sum()
-        if e_tot.size > 1:
-            aux = jax.tree_map(lambda x: x[-1], aux)
-            for ii in range(e_tot.size - 1):
-                aux[f"e_mid{ii}"] = e_tot[ii]
+        loss = e_tot
         if sign_factor > 0:
             exp_s = aux["exp_s"]
             loss += lower_penalty(exp_s, sign_factor, sign_target, sign_power)
@@ -117,7 +108,6 @@ def train(cfg: ConfigDict):
     sample_size = sample_batch * sample_step
     sample_prop = cfg.sample.prop_steps
     eval_batch = cfg.optim.batch if cfg.optim.batch is not None else sample_batch
-    eval_mstep = jnp.size(cfg.loss.step_weights) if cfg.loss.get("step_weights") is not None else 0
     if sample_size % eval_batch != 0:
         logging.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_batch = sample_batch
@@ -157,7 +147,7 @@ def train(cfg: ConfigDict):
     optimizer = make_optimizer(lr_schedule=lr_schedule, grad_clip=cfg.optim.grad_clip,
         **ensure_mapping(cfg.optim.optimizer, default_key="name"))
     expect_fn = make_eval_total(hamiltonian, braket, 
-        multi_steps=eval_mstep, default_batch=eval_batch, calc_stds=True)
+        default_batch=eval_batch, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 

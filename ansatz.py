@@ -54,23 +54,16 @@ class Ansatz(nn.Module):
                      self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
                     if self.wfn_param else wfn)
  
-    def __call__(self, fields, *, keep_last=0):
+    def __call__(self, fields):
         if isinstance(fields, ndarray):
             fields = (fields,)
         assert (jax.tree_map(jnp.shape, fields) 
                 == jax.tree_map(tuple, self.fields_shape(len(fields))))
         wfn = self.wfn
         log_weight = 0.
-        if keep_last > 0:
-            results = []
-        for ii, (prop, flds) in enumerate(zip(self.propagators, fields)):
-            if keep_last > 0 and ii > len(self.propagators) - keep_last:
-                results.append((wfn, log_weight))
+        for prop, flds in zip(self.propagators, fields):
             wfn, logw = prop(wfn, flds)
             log_weight += logw
-        if keep_last > 0:
-            results.append((wfn, log_weight))
-            wfn, log_weight = jax.tree_map(lambda *xs: jnp.stack(xs, 0), *results)
         return wfn, log_weight
 
 
@@ -89,20 +82,18 @@ class BraKet(nn.Module):
             return (self.trial.fields_shape(lmp), 
                     self.ansatz.fields_shape(rmp))
 
-    def __call__(self, fields, *, keep_last=0):
+    def __call__(self, fields):
         if self.trial is None:
-            out = jax.vmap(partial(self.ansatz, keep_last=keep_last))(fields)
+            out = jax.vmap(self.ansatz)(fields)
             bra_out = jax.tree_map(lambda x: x[0], out)
             ket_out = jax.tree_map(lambda x: x[1], out)
         else:
-            keep_last = min(keep_last, 
-                len(self.trial.propagators)+1, len(self.ansatz.propagators)+1)
-            bra_out = self.trial(fields[0], keep_last=keep_last)
-            ket_out = self.ansatz(fields[1], keep_last=keep_last)
+            bra_out = self.trial(fields[0])
+            ket_out = self.ansatz(fields[1])
         return bra_out, ket_out
 
     def sign_logov(self, fields):
-        (bra, bra_lw), (ket, ket_lw) = self(fields, keep_last=0)
+        (bra, bra_lw), (ket, ket_lw) = self(fields)
         sign, logov = calc_slov(bra, ket)
         return sign, logov + bra_lw + ket_lw
 

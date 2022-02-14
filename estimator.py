@@ -20,7 +20,7 @@ def exp_shifted(x, normalize=None):
     return exp, stblz
 
 
-def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
+def make_eval_local(hamil: Hamiltonian, braket: BraKet):
     """Create a function that evaluates local energy, sign and log of the overlap.
 
     Args:
@@ -29,9 +29,6 @@ def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
         braket (Braket): 
             the braket ansatz that generate two Slater determinant (bra and ket)
             and corresponding weights from aux fields.
-        multi_steps (int, optional):
-            if greater than 0, evaluate on the last m steps of the 
-            propagation output in the ansatz, instead of the final one.
 
     Returns:
         eval_local (callable): 
@@ -41,8 +38,6 @@ def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
     """
     eloc_fn = hamil.local_energy
     slov_fn = hamil.calc_slov
-    if multi_steps > 0:
-        eloc_fn, slov_fn = map(jax.vmap, (eloc_fn, slov_fn))
 
     def eval_local(params, fields):
         r"""evaluate the local energy, sign and log-overlap of the bra and ket.
@@ -61,7 +56,7 @@ def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
             logov (float): 
                 the log of absolute value of the overlap :math:`\log{ |<\Phi(\sigma)|\Psi(\sigma)>| }`
         """
-        (bra, bra_lw), (ket, ket_lw) = braket.apply(params, fields, keep_last=multi_steps)
+        (bra, bra_lw), (ket, ket_lw) = braket.apply(params, fields)
         eloc = eloc_fn(bra, ket)
         sign, logov = slov_fn(bra, ket)
         return eloc, sign, logov + bra_lw + ket_lw
@@ -69,7 +64,7 @@ def make_eval_local(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0):
     return eval_local
 
 
-def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
+def make_eval_total(hamil: Hamiltonian, braket: BraKet,
                     default_batch: int = 100, calc_stds: bool = False):
     """Create a function that evaluates the total energy from a batch of field configurations.
 
@@ -79,9 +74,6 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
         braket (Braket): 
             the braket ansatz that generate two Slater determinant (bra and ket)
             and corresponding weights from aux fields.
-        multi_steps (int, optional):
-            if greater than 0, evaluate on the last m steps of the 
-            propagation output in the ansatz, instead of the final one.
         default_batch (int, optional): 
             the batch size to use if there is no pre-spiltted batch in the data.
         calc_stds (bool, optional):
@@ -95,7 +87,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
             and returns the estimated total energy and auxiliary estimations. 
     """
 
-    eval_local = make_eval_local(hamil, braket, multi_steps)
+    eval_local = make_eval_local(hamil, braket)
     batch_eval = jax.vmap(eval_local, in_axes=(None, 0))
 
     def check_shape(data):
@@ -131,10 +123,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet, multi_steps: int = 0,
             var_s = paxis.all_mean(jnp.abs(sign - exp_s/tot_w)**2 * rel_w) / tot_w
             aux_data.update(std_es=jnp.sqrt(var_es), std_s=jnp.sqrt(var_s))
         return etot, aux_data
-    
-    if multi_steps > 0:
-        calc_statistics = jax.vmap(calc_statistics, in_axes=(-1,-1,-1,None), out_axes=0)
-        
+            
     def eval_total(params, data):
         r"""evaluate the total energy and the auxiliary estimations from batched data.
 
