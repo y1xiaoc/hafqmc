@@ -93,6 +93,7 @@ def default() -> ConfigDict:
                 "delay": 1e3,
                 "decay": 1.0,
             },
+            "baseline": None, #{"decay": 0.99},
         },
         "log": {
             "stat_freq": 1,
@@ -124,6 +125,7 @@ def example() -> ConfigDict:
     cfg.optim.lr.start = 3e-4
     cfg.optim.lr.delay = 5e3
     cfg.optim.lr.decay = 1.
+    cfg.optim.baseline = {"decay": 0.99}
     # use mala sampler
     cfg.sample.sampler = {"name": "langevin", "tau": 0.03, "steps": 10}
     cfg.sample.burn_in = 100

@@ -6,6 +6,7 @@ from jax import numpy as jnp
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
 from tensorboardX import SummaryWriter
+from typing import NamedTuple
 
 from .molecule import build_mf
 from .hamiltonian import Hamiltonian
@@ -13,6 +14,7 @@ from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
+from .utils import make_moving_avg, PyTree
 
 
 def lower_penalty(s, factor=1., target=1., power=2.):
@@ -40,8 +42,8 @@ def make_loss(expect_fn,
               sign_factor=0., sign_target=1., sign_power=2.,
               std_factor=0., std_target=1., std_power=2):
 
-    def loss(params, data):
-        e_tot, aux = expect_fn(params, data)
+    def loss(params, data, *extra, **kwargs):
+        e_tot, aux = expect_fn(params, data, *extra, **kwargs)
         loss = e_tot
         if sign_factor > 0:
             exp_s = aux["exp_s"]
@@ -54,18 +56,29 @@ def make_loss(expect_fn,
     return loss
 
 
-def make_training_step(loss_and_grad, mc_sampler, optimizer):
+class TrainingState(NamedTuple):
+    step: int
+    params: PyTree
+    mc_state: PyTree
+    opt_state: PyTree
+    est_state: PyTree = None
+
+
+def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None):
     is_union = isinstance(mc_sampler, SamplerUnion)
 
-    def step(key, params, mc_state, opt_state, sample_flag=None):
+    def step(key, train_state, sample_flag=None):
+        ii, params, mc_state, opt_state, ebar = train_state
         sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
         mc_state = sampler.refresh(mc_state, params)
         mc_state, data = sampler.sample(key, params, mc_state)
-        (loss, aux), grads = loss_and_grad(params, data)
+        (loss, aux), grads = loss_and_grad(params, data, ebar)
         grads = jax.tree_map(jnp.conj, grads) # for complex parameters
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
-        return (params, mc_state, opt_state), (loss, aux)
+        if accumulator is not None: ebar = accumulator(ebar, aux["e_tot"], ii)
+        new_state = TrainingState(ii+1, params, mc_state, opt_state, ebar)
+        return new_state, (loss, aux)
 
     return step
 
@@ -73,11 +86,13 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer):
 def make_evaluation_step(expect_fn, mc_sampler):
     is_union = isinstance(mc_sampler, SamplerUnion)
     
-    def step(key, params, mc_state, extras=None, sample_flag=None):
+    def step(key, train_state, sample_flag=None):
+        ii, params, mc_state, *other = train_state
         sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
         mc_state, data = sampler.sample(key, params, mc_state)
         e_tot, aux = expect_fn(params, data)
-        return (params, mc_state, extras), (e_tot, aux)
+        new_state = TrainingState(ii+1, params, mc_state, *other)
+        return new_state, (e_tot, aux)
     
     return step
         
@@ -150,10 +165,12 @@ def train(cfg: ConfigDict):
         default_batch=eval_batch, calc_stds=True)
     loss_fn = make_loss(expect_fn, **cfg.loss)
     loss_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
+    moving_avg_fn = (make_moving_avg(**cfg.optim.baseline)
+        if cfg.optim.baseline is not None else None)
 
     # the core training iteration, to be pmaped
     if cfg.optim.lr.start > 0:
-        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer)
+        train_step = make_training_step(loss_and_grad, mc_sampler, optimizer, moving_avg_fn)
     else:
         train_step = make_evaluation_step(expect_fn, mc_sampler)
     train_step = jax.jit(train_step, static_argnames="sample_flag")
@@ -169,38 +186,46 @@ def train(cfg: ConfigDict):
         else:
             logging.info("Loading parameters from saved file")
             params = load_pickle(cfg.restart.params)
-            if isinstance(params, tuple): 
-                params = params[1]
+            if isinstance(params, tuple): params = params[1]
+            if isinstance(params, TrainingState): params = params.params
         mc_state = mc_sampler.init(mckey, params)
         opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
             logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
             mc_state = sampler_1s_nc.burn_in(subkey, params, mc_state, cfg.sample.burn_in)
+        ebar = hamiltonian.local_energy() if cfg.optim.baseline is not None else None
+        train_state = TrainingState(0, params, mc_state, opt_state, ebar)
     else:
         logging.info("Loading parameters and states from saved file")
-        key, params, mc_state, opt_state = load_pickle(cfg.restart.states)
+        key, *rest = load_pickle(cfg.restart.states)
+        rest = rest[0] if len(rest) == 1 else (0, *rest)
+        if len(rest) < 5 and cfg.optim.baseline is not None:
+            rest = (*rest, hamiltonian.local_energy())
+        train_state = TrainingState(*rest)
 
     # the actual training iteration
     logging.info("Start training")
     printer.print_header(prefix="# ")
     for ii in range(total_iter + 1):
         printer.reset_timer()
+        # choose sampler
         sflag = None
         if not (sample_prop is None or isinstance(sample_prop, int)):
             key, flagkey = jax.random.split(key)
             sflag = sample_prop[jax.random.choice(flagkey, len(sample_prop))]
+        # core training step
         key, subkey = jax.random.split(key)
-        (params, mc_state, opt_state), (loss, aux) = \
-            train_step(subkey, params, mc_state, opt_state, sample_flag=sflag)
+        train_state, (loss, aux) = train_step(subkey, train_state, sample_flag=sflag)
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             if sflag is not None: aux["nprop"] = sflag
-            _lr = lr_schedule(opt_state[-1][0].count) if callable(lr_schedule) else lr_schedule
+            _lr = (lr_schedule(train_state.opt_state[-1][0].count) 
+                if callable(lr_schedule) else lr_schedule)
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
             writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
-            save_pickle(cfg.log.ckpt_path, (key, params, mc_state, opt_state))
+            save_pickle(cfg.log.ckpt_path, (key, train_state))
     writer.close()
     
-    return params, mc_state, opt_state
+    return train_state

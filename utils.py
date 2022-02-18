@@ -25,6 +25,10 @@ def compose(*funcs):
     return reduce(c2, funcs)
 
 
+def just_grad(x):
+    return x - lax.stop_gradient(x)
+
+
 def _T(x): 
     return jnp.swapaxes(x, -1, -2)
 
@@ -115,6 +119,18 @@ def make_expm_apply(method="scan", m=6, s=1):
     raise ValueError(f"unknown expm_apply method type: {method}")
 
 expm_apply = make_expm_apply("scan", 6, 1)
+
+
+def make_moving_avg(decay=0.99, early_growth=True):
+    def moving_avg(acc, new, i):
+        if early_growth:
+            iteration_decay = jnp.minimum(decay, (1.0 + i) / (10.0 + i))
+        else:
+            iteration_decay = decay
+        updated_acc = iteration_decay * acc
+        updated_acc += (1 - iteration_decay) * new
+        return jax.lax.stop_gradient(updated_acc)
+    return moving_avg
 
 
 def ravel_shape(target_shape):

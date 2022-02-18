@@ -3,7 +3,7 @@ from jax import lax
 from jax import numpy as jnp
 from functools import partial
 
-from .utils import paxis
+from .utils import paxis, just_grad
 from .hamiltonian import Hamiltonian
 from .ansatz import BraKet
 
@@ -106,7 +106,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
                 logsw = logsw.reshape(-1, batch)
         return fields, logsw
 
-    def calc_statistics(eloc, sign, logov, logsw):
+    def calc_statistics(eloc, sign, logov, logsw, ebar=None):
         logsw = logsw if logsw is not None else logov
         logsw = lax.stop_gradient(logsw)
         rel_w, lshift = exp_shifted(logov - logsw, normalize="mean")
@@ -122,9 +122,13 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
             var_es = paxis.all_mean(jnp.abs(eloc*sign - exp_es/tot_w)**2 * rel_w) / tot_w
             var_s = paxis.all_mean(jnp.abs(sign - exp_s/tot_w)**2 * rel_w) / tot_w
             aux_data.update(std_es=jnp.sqrt(var_es), std_s=jnp.sqrt(var_s))
+        if ebar is not None:
+            aux_data["e_bar"] = ebar
+            ediff = lax.stop_gradient(etot - ebar).real
+            etot += just_grad(ediff * exp_s.real / lax.stop_gradient(exp_s.real))
         return etot, aux_data
             
-    def eval_total(params, data):
+    def eval_total(params, data, ebar=None):
         r"""evaluate the total energy and the auxiliary estimations from batched data.
 
         Args:
@@ -152,7 +156,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         if jax.tree_leaves(fields)[0].shape[0] > 1:
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
-        etot, aux_data = calc_statistics(eloc, sign, logov, logsw)
+        etot, aux_data = calc_statistics(eloc, sign, logov, logsw, ebar)
         return etot, aux_data
             
     return eval_total
