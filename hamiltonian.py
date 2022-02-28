@@ -1,8 +1,43 @@
 import jax
+import numpy as onp
 from jax import numpy as jnp
+from jax import scipy as jsp
 
 from .molecule import integrals_from_scf, initwfn_from_scf
+from .molecule import initwfn_from_ghf, get_orth_ao, solve_ghf
 
+
+def _has_spin(wfn):
+    return not (isinstance(wfn, (jnp.ndarray, onp.ndarray)) 
+                and wfn.ndim == 2)
+
+def _make_ghf(wfn):
+    assert _has_spin(wfn)
+    wa, wb = wfn
+    return jsp.linalg.block_diag(wa, wb)
+
+def _align_wfn(V, U):
+    uhf_v, uhf_u = _has_spin(V), _has_spin(U)
+    if uhf_v and not uhf_u: #U is ghf
+        V = _make_ghf(V)
+    if not uhf_v and uhf_u: #V is ghf
+        U = _make_ghf(U)
+    return V, U
+
+def _align_rdm(rdm, nao):
+    # return sum diag block and all components
+    if rdm.ndim == 2 and rdm.shape[-1] == nao:
+        # rhf case, assume rdm is from single wfn
+        return rdm*2, jnp.stack([rdm, rdm])
+    if rdm.ndim == 3 and rdm.shape[0] in (2,4) and rdm.shape[-1] == nao:
+        # uhf case, no non-diag block (or aligned ghf case)
+        return rdm[0]+rdm[-1], rdm
+    if rdm.ndim == 2 and rdm.shape[-1] == nao * 2:
+        # ghf case, return four blocks in uu,ud,du,dd order
+        lrdm = rdm.reshape(2,nao,2,nao).swapaxes(1,2).reshape(-1,nao,nao)
+        return lrdm[0]+lrdm[-1], lrdm
+    raise ValueError("unknown rdm type")
+   
     
 def calc_ovlp_ns(V, U):
     r"""
@@ -15,16 +50,16 @@ def calc_ovlp(V, U):
     Overlap of two (non-orthogonal) Slater determinants V and U with spin components
 
     Args:
-        V, U (tuple of array):
-            pair of array for spin up (first) and spin down (second) matrix
-            representation of the bra(V) and ket(U) in calculate the RDM, 
+        V, U (array or tuple of array):
+            matrix representation of the bra(V) and ket(U) in calculate the RDM, 
             with row index (-2) for basis and column index (-1) for electrons. 
 
     Returns:
         ovlp (float):
             overlap of the two Slater determinants
     """
-    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+    V, U = _align_wfn(V, U)
+    if not _has_spin(V) and not _has_spin(U):
         return calc_ovlp_ns(V, U)
     Va, Vb = V
     Ua, Ub = U
@@ -42,7 +77,7 @@ def calc_slov(V, U):
     Sign and log of overlap of two SD V and U with spin components
 
     Args:
-        V, U (array):
+        V, U (array or tuple of array):
             matrix representation of the bra(V) and ket(U) in calculate the RDM, 
             with row index (-2) for basis and column index (-1) for electrons. 
 
@@ -52,7 +87,8 @@ def calc_slov(V, U):
         logdet (float):
             log of the absolute value of the overlap
     """
-    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+    V, U = _align_wfn(V, U)
+    if not _has_spin(V) and not _has_spin(U):
         return calc_slov_ns(V, U)
     Va, Vb = V
     Ua, Ub = U
@@ -84,16 +120,16 @@ def calc_rdm(V, U):
     :math:`U` stands for the matrix representation of Slater determinant :math:`|\psi_U\rangle`.
     
     Args:
-        V, U (tuple of array):
-            pair of array for spin up (first) and spin down (second) matrix
-            representation of the bra(V) and ket(U) in calculate the RDM, 
+        V, U (array or tuple of array):
+            matrix representation of the bra(V) and ket(U) in calculate the RDM, 
             with row index (-2) for basis and column index (-1) for electrons. 
         
     Returns:
         rdm (array):
             spin up and spin down one-particle reduced density matrix in computing basis
     """
-    if (isinstance(V, jnp.ndarray) and isinstance(U, jnp.ndarray) and V.ndim == U.ndim == 2):
+    V, U = _align_wfn(V, U)
+    if not _has_spin(V) and not _has_spin(U):
         return calc_rdm_ns(V, U)
     Va, Vb = V
     Ua, Ub = U
@@ -102,7 +138,8 @@ def calc_rdm(V, U):
 
 def calc_e1b(h1e, rdm):
     # jnp.einsum("ij,ij", h1e, rdm)
-    return (h1e * rdm).sum()
+    gd, gl = _align_rdm(rdm, h1e.shape[-1])
+    return (h1e * gd).sum()
 
 
 def calc_e2b(eri, rdm):
@@ -114,31 +151,19 @@ def calc_e2b(eri, rdm):
         raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
 
 def calc_e2b_dense(eri, rdm):
-    if rdm.ndim == 3:
-        ga, gb = rdm
-    else:
-        ga, gb = rdm*.5, rdm*.5
-    gt = ga + gb
-    ej = 0.5 * jnp.einsum("prqs,pr,qs", eri, gt, gt)
-    ek = 0.5 * (jnp.einsum("prqs,ps,qr", eri, ga, ga) 
-              + jnp.einsum("prqs,ps,qr", eri, gb, gb))
+    gd, gl = _align_rdm(rdm, eri.shape[-1])
+    ej = 0.5 * jnp.einsum("prqs,pr,qs", eri, gd, gd)
+    ek = 0.5 * jnp.einsum("prqs,lps,lqr", eri, gl, gl)
     return ej - ek
 
 def calc_e2b_chol(ceri, rdm):
-    if rdm.ndim == 3:
-        ga, gb = rdm
-    else:
-        ga, gb = rdm*.5, rdm*.5
-    gt = ga + gb
-    # ej = 0.5 * jnp.einsum("kpr,kqs,pr,qs", ceri, ceri, gt, gt)
-    chol_j = jnp.einsum("kpr,pr->k", ceri, gt)
+    gd, gl = _align_rdm(rdm, ceri.shape[-1])
+    # ej = 0.5 * jnp.einsum("kpr,kqs,pr,qs", ceri, ceri, gd, gd)
+    chol_j = jnp.einsum("kpr,pr->k", ceri, gd)
     ej = 0.5 * (jnp.einsum("k,k", chol_j, chol_j))
-    # ek = 0.5 * (jnp.einsum("kpr,kqs,ps,qr", ceri, ceri, ga, ga)
-    #           + jnp.einsum("kpr,kqs,ps,qr", ceri, ceri, gb, gb))
-    chol_ka = jnp.einsum("kpr,ps->krs", ceri, ga)
-    chol_kb = jnp.einsum("kpr,ps->krs", ceri, gb)
-    ek = 0.5 * (jnp.einsum("krs,ksr", chol_ka, chol_ka) 
-              + jnp.einsum("krs,ksr", chol_kb, chol_kb))
+    # ek = 0.5 * jnp.einsum("kpr,kqs,lps,lqr", ceri, ceri, gl, gl)
+    chol_kl = jnp.einsum("kpr,lps->lkrs", ceri, gl)
+    ek = 0.5 * jnp.einsum("lkrs,lksr", chol_kl, chol_kl) 
     return ej - ek
 
 
@@ -225,20 +250,24 @@ class Hamiltonian:
 
     @classmethod
     def from_pyscf(cls, mol_or_mf,
-                   chol_cut=1e-6, orth_ao=None, full_eri=False, with_cc=False):
+                   chol_cut=1e-6, orth_ao=None, full_eri=False, 
+                   with_cc=False, with_ghf=False):
         if not hasattr(mol_or_mf, "mo_coeff"):
             mf = mol_or_mf.HF().run()
         else:
             mf = mol_or_mf
+        orth_mat = get_orth_ao(mf, orth_ao)
+        aux = {"orth_mat": orth_mat}
         if with_cc:
             assert orth_ao is None, "only support MO basis for CCSD amplitudes"
             mcc = with_cc if hasattr(with_cc, "t1") else mf.CCSD().run()
-            aux = {"cc_t1": mcc.t1, "cc_t2": mcc.t2}
-        else:
-            aux = {}
+            aux.update(cc_t1=mcc.t1, cc_t2=mcc.t2)
+        if with_ghf:
+            mghf = with_ghf if hasattr(with_ghf, "mo_coeff") else solve_ghf(mf.mol)
+            aux.update(ghf_wfn=initwfn_from_ghf(mghf, mf, orth_mat))
         ints = integrals_from_scf(mf, 
-            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_ao)
-        wfn0 = initwfn_from_scf(mf, orth_ao)
+            use_mcd=True, chol_cut=chol_cut, orth_ao=orth_mat)
+        wfn0 = initwfn_from_scf(mf, orth_mat)
         return cls(*ints, wfn0, aux, full_eri=full_eri)
     
     def tree_flatten(self):
