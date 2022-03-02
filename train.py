@@ -187,7 +187,7 @@ def train(cfg: ConfigDict):
             logging.info("Loading parameters from saved file")
             params = load_pickle(cfg.restart.params)
             if isinstance(params, tuple): params = params[1]
-            if isinstance(params, TrainingState): params = params.params
+            if isinstance(params, tuple): params = params[1]
         mc_state = mc_sampler.init(mckey, params)
         opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
@@ -225,7 +225,7 @@ def train(cfg: ConfigDict):
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
             writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
-            save_pickle(cfg.log.ckpt_path, (key, train_state))
+            save_pickle(cfg.log.ckpt_path, (key, tuple(train_state)))
     writer.close()
     
     return train_state
