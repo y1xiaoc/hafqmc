@@ -34,8 +34,8 @@ def _align_rdm(rdm, nao):
         return rdm[0]+rdm[-1], rdm
     if rdm.ndim == 2 and rdm.shape[-1] == nao * 2:
         # ghf case, return four blocks in uu,ud,du,dd order
-        lrdm = rdm.reshape(2,nao,2,nao).swapaxes(1,2).reshape(-1,nao,nao)
-        return lrdm[0]+lrdm[-1], lrdm
+        lrdm = rdm.reshape(2,nao,2,nao).swapaxes(1,2)
+        return lrdm[0,0]+lrdm[1,1], lrdm
     raise ValueError("unknown rdm type")
    
     
@@ -143,28 +143,31 @@ def calc_e1b(h1e, rdm):
 
 
 def calc_e2b(eri, rdm):
+    gs, ga = _align_rdm(rdm, eri.shape[-1])
     if eri.ndim == 4:
-        return calc_e2b_dense(eri, rdm)
+        return calc_ej_dense(eri, gs) - calc_ek_dense(eri, ga)
     elif eri.ndim == 3:
-        return calc_e2b_chol(eri, rdm)
+        return calc_ej_chol(eri, gs) - calc_ek_chol(eri, ga)
     else:
         raise RuntimeError(f"invalid shape of ERI: {eri.shape}")
 
-def calc_e2b_dense(eri, rdm):
-    gd, gl = _align_rdm(rdm, eri.shape[-1])
-    ej = 0.5 * jnp.einsum("prqs,pr,qs", eri, gd, gd)
-    ek = 0.5 * jnp.einsum("prqs,lps,lqr", eri, gl, gl)
-    return ej - ek
+def calc_ej_dense(eri, srdm):
+    return 0.5 * jnp.einsum("prqs,pr,qs", eri, srdm, srdm)
 
-def calc_e2b_chol(ceri, rdm):
-    gd, gl = _align_rdm(rdm, ceri.shape[-1])
-    # ej = 0.5 * jnp.einsum("kpr,kqs,pr,qs", ceri, ceri, gd, gd)
-    chol_j = jnp.einsum("kpr,pr->k", ceri, gd)
-    ej = 0.5 * (jnp.einsum("k,k", chol_j, chol_j))
-    # ek = 0.5 * jnp.einsum("kpr,kqs,lps,lqr", ceri, ceri, gl, gl)
-    chol_kl = jnp.einsum("kpr,lps->lkrs", ceri, gl)
-    ek = 0.5 * jnp.einsum("lkrs,lksr", chol_kl, chol_kl) 
-    return ej - ek
+def calc_ej_chol(ceri, srdm):
+    chol_j = jnp.einsum("kpr,pr->k", ceri, srdm)
+    return 0.5 * jnp.einsum("k,k", chol_j, chol_j)
+
+def calc_ek_dense(eri, rdm):
+    assert rdm.ndim in (3, 4)
+    subs = "prqs,lps,lqr" if rdm.ndim == 3 else "prqs,abps,baqr"
+    return 0.5 * jnp.einsum(subs, eri, rdm, rdm)
+
+def calc_ek_chol(ceri, rdm):
+    assert rdm.ndim in (3, 4)
+    chol_k = jnp.einsum("kpr,...ps->k...rs", ceri, rdm)
+    subs = "klrs,klsr" if rdm.ndim == 3 else "kabrs,kbasr"
+    return 0.5 * jnp.einsum(subs, chol_k, chol_k)
 
 
 def calc_v0(eri):
