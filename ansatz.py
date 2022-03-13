@@ -9,8 +9,9 @@ from typing import Sequence, Union, Tuple, Optional
 
 from .utils import _t_real, _t_cplx
 from .utils import fix_init, parse_bool
+from .utils import block_spin
 from .propagator import Propagator
-from .hamiltonian import calc_slov
+from .hamiltonian import calc_slov, _has_spin, _make_ghf
 
 
 class Ansatz(nn.Module):
@@ -22,9 +23,9 @@ class Ansatz(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, propagators=None, **kwargs):
+    def create(cls, hamiltonian, propagators=None, *, spin_mixing=False, **kwargs):
         if propagators is None:
-            ansatz_props = [Propagator.create(hamiltonian, **kwargs)]
+            ansatz_props = [Propagator.create(hamiltonian, spin_mixing=spin_mixing, **kwargs)]
             ansatz_kwargs = dict(
                 wfn_param = parse_bool("wfn", kwargs['parametrize']),
                 wfn_random = kwargs['init_random'],
@@ -35,10 +36,11 @@ class Ansatz(nn.Module):
             ansatz_kwargs = kwargs
             ansatz_props = []
             for popt in propagators:
-                prop = (Propagator.create(hamiltonian, **popt) 
+                prop = (Propagator.create(hamiltonian, spin_mixing=spin_mixing, **popt) 
                         if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
-        return cls(hamiltonian.wfn0, propagators=ansatz_props, **ansatz_kwargs)
+        init_wfn = hamiltonian.wfn0 if not spin_mixing else _make_ghf(hamiltonian.wfn0)
+        return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self, max_prop=None):
@@ -47,12 +49,14 @@ class Ansatz(nn.Module):
 
     def setup(self):
         wfn = self.init_wfn 
-        if not (isinstance(wfn, (tuple, list)) or wfn.ndim >= 3):
-            wfn = (wfn, wfn[:,:0])
         _dtype = _t_cplx if self.wfn_complex else _t_real
-        self.wfn = ((self.param("wfn_a", fix_init, wfn[0], _dtype, self.wfn_random),
-                     self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
-                    if self.wfn_param else wfn)
+        if not self.wfn_param:
+            self.wfn = wfn
+        elif _has_spin(wfn):
+            self.wfn = (self.param("wfn_a", fix_init, wfn[0], _dtype, self.wfn_random),
+                        self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
+        else:
+            self.wfn = self.param("wfn_a", fix_init, wfn, _dtype, self.wfn_random)
  
     def __call__(self, fields):
         if isinstance(fields, ndarray):

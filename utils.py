@@ -174,6 +174,12 @@ def unpack_spin(wfn, nelec):
     return (w_up, w_dn)
 
 
+def block_spin(a, b, perturb=0.):
+    p1 = jnp.eye(a.shape[-2], b.shape[-1]) * perturb
+    p2 = jnp.eye(b.shape[-2], a.shape[-1]) * perturb
+    return jnp.block([[a, p1],[p2, b]])
+
+
 def parse_activation(name, **kwargs):
     if not isinstance(name, str):
         return name

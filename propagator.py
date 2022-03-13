@@ -9,11 +9,11 @@ from typing import Sequence, Union, Optional, Tuple
 from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
-from .utils import pack_spin, unpack_spin
+from .utils import pack_spin, unpack_spin, block_spin
 from .utils import make_expm_apply
 from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
-from .hamiltonian import calc_rdm
+from .hamiltonian import calc_rdm, _make_ghf
 
 
 class Propagator(nn.Module):
@@ -45,11 +45,16 @@ class Propagator(nn.Module):
     @nn.nowrap
     @classmethod
     def create_normal(cls, hamiltonian, init_tsteps, *, 
-                      max_nhs=None, mf_subtract=False, **init_kwargs):
+                      max_nhs=None, mf_subtract=False, spin_mixing=False, 
+                      **init_kwargs):
         twfn = hamiltonian.wfn0
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
+        if spin_mixing:
+            init_hmf = block_spin(init_hmf, init_hmf, 0.01)
+            init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, 0.01)
+            twfn = _make_ghf(twfn)
         mfwfn = twfn if mf_subtract else None
         return cls(init_hmf, init_vhs, init_enuc, 
             init_tsteps=init_tsteps, mfshift_wfn=mfwfn, **init_kwargs)
@@ -57,8 +62,9 @@ class Propagator(nn.Module):
     @nn.nowrap
     @classmethod
     def create_ccsd(cls, hamiltonian, *, 
-                    with_mask=True, use_complex=False,
+                    with_mask=True, use_complex=False, spin_mixing=False,
                     expm_option=(), mf_subtract=False, **init_kwargs):
+        assert not spin_mixing, "spin mixing is not supported in ccsd propagator"
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         if with_mask:
             expm_option = ("loop", 1, 1)
@@ -170,7 +176,7 @@ class Propagator(nn.Module):
         wfn, ldh = app_h(wfn, -1)
         log_weight += ldh
         # resolve the sign in the log
-        wfn *= jnp.exp(log_weight.imag * 1j / sum(nelec))
+        wfn *= jnp.exp(log_weight.imag * 1j / onp.sum(nelec))
         # split different spin part
         wfn = unpack_spin(wfn, nelec)
         # return both the wave function matrix and the log of scalar part
