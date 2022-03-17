@@ -22,6 +22,7 @@ def default_prop(with_net=False) -> ConfigDict:
         "mf_subtract": False,
         "dyn_mfshift": False,
         "priori_mask": None,
+        "spin_mixing": False,
     }, 
     type_safe=False, convert_dict=True)
 

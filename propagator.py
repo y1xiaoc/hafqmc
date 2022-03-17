@@ -62,9 +62,8 @@ class Propagator(nn.Module):
     @nn.nowrap
     @classmethod
     def create_ccsd(cls, hamiltonian, *, 
-                    with_mask=True, use_complex=False, spin_mixing=False,
+                    with_mask=True, use_complex=False,
                     expm_option=(), mf_subtract=False, **init_kwargs):
-        assert not spin_mixing, "spin mixing is not supported in ccsd propagator"
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         if with_mask:
             expm_option = ("loop", 1, 1)
@@ -166,6 +165,9 @@ class Propagator(nn.Module):
             if self.ortho_intvl > 0 and (ii+1) % self.ortho_intvl == 0:
                 return orthonormalize(wfn, nelec)
             return wfn, 0.
+        # transform app functions to work on ghf wfn
+        if wfn.shape[0] != self.init_hmf.shape[-1]:
+            app_h, app_v = map(_app_to_ghf, (app_h, app_v))
         # iteratively apply step functions
         wfn = wfn+0j
         for its in range(self.nts_v):
@@ -211,3 +213,14 @@ def normalize(wfn):
     nwfn = wfn / norm
     logd = jnp.log(norm).sum()
     return nwfn, logd
+
+
+def _app_to_ghf(appfun):
+    def newapp(wfn, ii):
+        gnao, nelec = wfn.shape
+        nao = gnao // 2
+        fwfn = wfn.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
+        fwfn, ld = appfun(fwfn, ii) 
+        wfn = fwfn.reshape(nao, 2, nelec).swapaxes(0,1).reshape(gnao, nelec)
+        return wfn, ld
+    return newapp

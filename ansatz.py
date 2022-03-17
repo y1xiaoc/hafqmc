@@ -4,12 +4,10 @@ from jax import numpy as jnp
 from flax import linen as nn
 from jax.numpy import ndarray
 import dataclasses
-from functools import partial
 from typing import Sequence, Union, Tuple, Optional
 
 from .utils import _t_real, _t_cplx
 from .utils import fix_init, parse_bool
-from .utils import block_spin
 from .propagator import Propagator
 from .hamiltonian import calc_slov, _has_spin, _make_ghf
 
@@ -23,9 +21,9 @@ class Ansatz(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, propagators=None, *, spin_mixing=False, **kwargs):
+    def create(cls, hamiltonian, propagators=None, **kwargs):
         if propagators is None:
-            ansatz_props = [Propagator.create(hamiltonian, spin_mixing=spin_mixing, **kwargs)]
+            ansatz_props = [Propagator.create(hamiltonian, **kwargs)]
             ansatz_kwargs = dict(
                 wfn_param = parse_bool("wfn", kwargs['parametrize']),
                 wfn_random = kwargs['init_random'],
@@ -36,11 +34,10 @@ class Ansatz(nn.Module):
             ansatz_kwargs = kwargs
             ansatz_props = []
             for popt in propagators:
-                prop = (Propagator.create(hamiltonian, spin_mixing=spin_mixing, **popt) 
+                prop = (Propagator.create(hamiltonian, **popt) 
                         if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
-        init_wfn = hamiltonian.wfn0 if not spin_mixing else _make_ghf(hamiltonian.wfn0)
-        return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
+        return cls(hamiltonian.wfn0, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self, max_prop=None):
@@ -48,7 +45,10 @@ class Ansatz(nn.Module):
         return tuple(p.fields_shape() for p in self.propagators[:nprop])
 
     def setup(self):
-        wfn = self.init_wfn 
+        wfn = self.init_wfn
+        nao = wfn[0].shape[0] if _has_spin(wfn) else wfn.shape[0]
+        if any(p.init_hmf.shape[-1] != nao for p in self.propagators):
+            wfn = _make_ghf(wfn)
         _dtype = _t_cplx if self.wfn_complex else _t_real
         if not self.wfn_param:
             self.wfn = wfn
