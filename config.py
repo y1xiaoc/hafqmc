@@ -63,6 +63,7 @@ def default() -> ConfigDict:
             "wfn_param": True,
             "wfn_random": 0.,
             "wfn_complex": False,
+            "wfn_spinmix": False,
         },
         "trial": None,
         "sample": {

@@ -21,7 +21,7 @@ class Ansatz(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create(cls, hamiltonian, propagators=None, **kwargs):
+    def create(cls, hamiltonian, propagators=None, wfn_spinmix=False, **kwargs):
         if propagators is None:
             ansatz_props = [Propagator.create(hamiltonian, **kwargs)]
             ansatz_kwargs = dict(
@@ -37,7 +37,8 @@ class Ansatz(nn.Module):
                 prop = (Propagator.create(hamiltonian, **popt) 
                         if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
-        return cls(hamiltonian.wfn0, propagators=ansatz_props, **ansatz_kwargs)
+        init_wfn = hamiltonian.wfn0 if not wfn_spinmix else _make_ghf(hamiltonian.wfn0)
+        return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
     @nn.nowrap
     def fields_shape(self, max_prop=None):
@@ -46,17 +47,14 @@ class Ansatz(nn.Module):
 
     def setup(self):
         wfn = self.init_wfn
-        nao = wfn[0].shape[0] if _has_spin(wfn) else wfn.shape[0]
-        if any(p.init_hmf.shape[-1] != nao for p in self.propagators):
-            wfn = _make_ghf(wfn)
         _dtype = _t_cplx if self.wfn_complex else _t_real
         if not self.wfn_param:
             self.wfn = wfn
         elif _has_spin(wfn):
-            self.wfn = (self.param("wfn_a", fix_init, wfn[0], _dtype, self.wfn_random),
-                        self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random))
+            self.wfn = (self.param("wfn_a", fix_init, wfn[0], _dtype, self.wfn_random, True),
+                        self.param("wfn_b", fix_init, wfn[1], _dtype, self.wfn_random, True))
         else:
-            self.wfn = self.param("wfn_a", fix_init, wfn, _dtype, self.wfn_random)
+            self.wfn = self.param("wfn_a", fix_init, wfn, _dtype, self.wfn_random, True)
  
     def __call__(self, fields):
         if isinstance(fields, ndarray):

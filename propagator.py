@@ -13,7 +13,7 @@ from .utils import pack_spin, unpack_spin, block_spin
 from .utils import make_expm_apply
 from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
-from .hamiltonian import calc_rdm, _make_ghf
+from .hamiltonian import calc_rdm, _make_ghf, _has_spin
 
 
 class Propagator(nn.Module):
@@ -52,8 +52,10 @@ class Propagator(nn.Module):
         if max_nhs is not None:
             init_vhs = init_vhs[:max_nhs]
         if spin_mixing:
-            init_hmf = block_spin(init_hmf, init_hmf, 0.01)
-            init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, 0.01)
+            ptb = (spin_mixing 
+                if isinstance(spin_mixing, (int, float, complex)) else 0.01)
+            init_hmf = block_spin(init_hmf, init_hmf, ptb)
+            init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, ptb)
             twfn = _make_ghf(twfn)
         mfwfn = twfn if mf_subtract else None
         return cls(init_hmf, init_vhs, init_enuc, 
@@ -145,6 +147,8 @@ class Propagator(nn.Module):
                         for _ in range(self.nts_v)]
 
     def __call__(self, wfn, fields):
+        if _has_spin(wfn) and wfn[0].shape[0] < self.init_hmf.shape[-1]:
+            wfn = _make_ghf(wfn)
         wfn, nelec = pack_spin(wfn)
         log_weight = self.enuc # + 0.5 * self.nts_v * self.nsite
         # get prop times
@@ -166,7 +170,7 @@ class Propagator(nn.Module):
                 return orthonormalize(wfn, nelec)
             return wfn, 0.
         # transform app functions to work on ghf wfn
-        if wfn.shape[0] != self.init_hmf.shape[-1]:
+        if wfn.shape[0] > self.init_hmf.shape[-1]:
             app_h, app_v = map(_app_to_ghf, (app_h, app_v))
         # iteratively apply step functions
         wfn = wfn+0j
