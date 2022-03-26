@@ -53,7 +53,7 @@ class Propagator(nn.Module):
             init_vhs = init_vhs[:max_nhs]
         if spin_mixing:
             ptb = (spin_mixing 
-                if isinstance(spin_mixing, (int, float, complex)) else 0.01)
+                if isinstance(spin_mixing, (float, complex)) else 0.01)
             init_hmf = block_spin(init_hmf, init_hmf, ptb)
             init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, ptb)
             twfn = _make_ghf(twfn)
@@ -89,7 +89,7 @@ class Propagator(nn.Module):
         # handle the expm_apply method
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        self.expm_apply = make_expm_apply(*_expm_op)
+        self.expm_apply = _warp_spin(make_expm_apply(*_expm_op))
         # decide whether to make quantities changeable / parametrized in complex
         _ifcplx = lambda t: _t_cplx if t else _t_real
         _td = {k: _ifcplx(v) for k, v in 
@@ -169,9 +169,6 @@ class Propagator(nn.Module):
             if self.ortho_intvl > 0 and (ii+1) % self.ortho_intvl == 0:
                 return orthonormalize(wfn, nelec)
             return wfn, 0.
-        # transform app functions to work on ghf wfn
-        if wfn.shape[0] > self.init_hmf.shape[-1]:
-            app_h, app_v = map(_app_to_ghf, (app_h, app_v))
         # iteratively apply step functions
         wfn = wfn+0j
         for its in range(self.nts_v):
@@ -219,12 +216,17 @@ def normalize(wfn):
     return nwfn, logd
 
 
-def _app_to_ghf(appfun):
-    def newapp(wfn, ii):
-        gnao, nelec = wfn.shape
-        nao = gnao // 2
-        fwfn = wfn.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
-        fwfn, ld = appfun(fwfn, ii) 
-        wfn = fwfn.reshape(nao, 2, nelec).swapaxes(0,1).reshape(gnao, nelec)
-        return wfn, ld
-    return newapp
+def _warp_spin(fun_expm):
+    def new_expm(A, B):
+        if A.shape[-1] == B.shape[-2]:
+            return fun_expm(A, B)
+        elif A.shape[-1]*2 == B.shape[-2]:
+            nao = A.shape[-1]
+            nelec = B.shape[-1]
+            fB = B.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
+            nfB = fun_expm(A, fB)
+            nB = nfB.reshape(nao, 2, nelec).swapaxes(0,1).reshape(2*nao, nelec)
+            return nB
+        else:
+            return fun_expm(A, B)
+    return new_expm
