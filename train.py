@@ -145,10 +145,13 @@ def train(cfg: ConfigDict):
     # set up all other classes and functions
     logging.info("Setting up the training loop")
     ansatz = Ansatz.create(hamiltonian, **cfg.ansatz)
-    trial = (Ansatz.create(hamiltonian, **cfg.trial) 
-             if cfg.trial is not None else None)
+    trial = (None if cfg.trial is None 
+             else ansatz if isinstance(cfg.trial, str) and 
+                    cfg.trial.lower() in ("same", "share", "ansatz")
+             else Ansatz.create(hamiltonian, **cfg.trial))
     braket = BraKet(ansatz, trial)
-    if sample_prop is None or isinstance(sample_prop, int):
+    if (sample_prop is None or isinstance(sample_prop, int)
+      or (isinstance(sample_prop, (tuple, list)) and len(sample_prop) == 2)):
         sampler_1s_1c = make_sampler(braket, max_prop=sample_prop,
             **ensure_mapping(cfg.sample.sampler, default_key="name"))
     else:
