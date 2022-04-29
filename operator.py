@@ -65,13 +65,15 @@ class AuxFieldNet(AuxField):
     hidden_sizes : Optional[Sequence[int]] = None
     actv_fun : str = "gelu"
     zero_init : bool = True
+    mod_density: bool = False
 
     def setup(self):
         super().setup()
         nhs = self.nhs
         last_init = (partial(nn.zeros, dtype=self.dtype) if self.zero_init 
                      else nn.initializers.lecun_normal(dtype=_t_real))
-        self.last_dense = nn.Dense(nhs+1, dtype=self.dtype, kernel_init=last_init, 
+        outdim = nhs+1 if self.mod_density else nhs
+        self.last_dense = nn.Dense(outdim, dtype=self.dtype, kernel_init=last_init, 
                                    bias_init=partial(nn.zeros, dtype=self.dtype))
         if self.hidden_sizes:
             inner_init = nn.initializers.orthogonal(
@@ -95,8 +97,9 @@ class AuxFieldNet(AuxField):
         if self.network is not None:
             tmp = self.network(tmp)
         tmp = self.last_dense(tmp)
-        log_weight -= tmp[-1]
-        nfields = fields[:self.nhs] + tmp[:-1]
+        nfields = fields[:self.nhs] + tmp[:self.nhs]
+        if self.mod_density:
+            log_weight -= tmp[-1]
         if self.trial_rdm is not None:
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
             nfields += step * vbar0

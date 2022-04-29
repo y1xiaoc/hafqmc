@@ -6,6 +6,7 @@ def default_prop(with_net=False) -> ConfigDict:
         "hidden_sizes": [-1, -1, -1],
         "actv_fun": "gelu",
         "zero_init": True,
+        "mod_density": False,
         }
     return ConfigDict({
         "max_nhs": None,
