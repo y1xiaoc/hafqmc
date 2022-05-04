@@ -185,6 +185,69 @@ def calc_v0_chol(ceri):
     return jnp.einsum("kpr,krs->ps", ceri, ceri)
 
 
+def calc_theta_ns(V, U):
+    V_h = V.conj().T
+    inv_O = jnp.linalg.inv(V_h @ U)
+    return U @ inv_O
+
+def calc_theta(V, U):
+    V, U = _align_wfn(V, U)
+    if not _has_spin(V) and not _has_spin(U):
+        return calc_theta_ns(V, U)
+    Va, Vb = V
+    Ua, Ub = U
+    return (calc_theta_ns(Va, Ua), calc_theta_ns(Vb, Ub))
+
+
+def calc_rdm_opt(V, theta):
+    V, theta = _align_wfn(V, theta)
+    if not _has_spin(V) and not _has_spin(theta):
+        return theta @ V.conj().T
+    Va, Vb = V
+    tha, thb = theta
+    return jnp.stack((tha @ Va.conj().T, thb @ Vb.conj().T), 0)
+
+
+def calc_e2b_opt(ceri, bra, theta):
+    bra, theta = _align_wfn(bra, theta)
+    if _has_spin(bra) and _has_spin(theta):
+        ej, ek = calc_ejk_opt_u(ceri, bra, theta)
+    else:
+        if bra.shape[0] == ceri.shape[-1]:
+            ej, ek = calc_ejk_opt_r(ceri, bra, theta)
+        else:
+            ej, ek = calc_ejk_opt_g(ceri, bra, theta)
+    return ej - ek
+
+def calc_ejk_opt_r(ceri, bra, theta):
+    f = jnp.einsum("kpq,pi,qj->kij", ceri, bra.conj(), theta)
+    ej = 2 * jnp.sum(f.trace(0, -1, -2) ** 2)
+    ek = jnp.einsum("kij,kji", f, f)
+    return ej, ek
+
+def calc_ejk_opt_u(ceri, bra, theta):
+    ej = ek = 0.
+    fup = jnp.einsum("kpq,pi,qj->kij", ceri, bra[0].conj(), theta[0])
+    cup = fup.trace(0, -1, -2)
+    ek += 0.5 * jnp.einsum("kij,kji", fup, fup)
+    del fup
+    fdn = jnp.einsum("kpq,pi,qj->kij", ceri, bra[1].conj(), theta[1])
+    cdn = fdn.trace(0, -1, -2)
+    ek += 0.5 * jnp.einsum("kij,kji", fdn, fdn)
+    ej = 0.5 * jnp.sum((cup + cdn)**2)
+    return ej, ek
+
+def calc_ejk_opt_g(ceri, bra, theta):
+    nao = ceri.shape[-1]
+    nele = bra.shape[-1]
+    bra = bra.reshape(2, nao, nele)
+    theta = theta.reshape(2, nao, nele)
+    f = jnp.einsum("kpq,api,aqj->kij", ceri, bra.conj(), theta)
+    ej = 0.5 * jnp.sum(f.trace(0, -1, -2) ** 2)
+    ek = 0.5 * jnp.einsum("kij,kji", f, f)
+    return ej, ek
+
+
 @jax.tree_util.register_pytree_node_class
 class Hamiltonian:
 
@@ -202,17 +265,31 @@ class Hamiltonian:
     def calc_e2b(self, rdm):
         eri = self.ceri if self._eri is None else self._eri
         return calc_e2b(eri, rdm)
+    
+    def calc_e2b_opt(self, bra, theta):
+        return calc_e2b_opt(self.ceri, bra, theta)
 
     calc_ovlp = staticmethod(calc_ovlp)
     calc_slov = staticmethod(calc_slov)
     calc_rdm  = staticmethod(calc_rdm)
 
-    def local_energy(self, bra=None, ket=None):
+    def local_energy(self, bra=None, ket=None, optimize=True):
         """the normalized energy from two slater determinants"""
         bra = bra if bra is not None else self.wfn0
         ket = ket if ket is not None else self.wfn0
+        le_fn = (self.local_energy_opt 
+            if optimize and self._eri is None else self.local_energy_raw)
+        return le_fn(bra, ket)
+
+    def local_energy_raw(self, bra, ket):
         rdm = calc_rdm(bra, ket)
         return self.enuc + self.calc_e1b(rdm) + self.calc_e2b(rdm)
+    
+    def local_energy_opt(self, bra, ket):
+        bra, ket = _align_wfn(bra, ket)
+        theta = calc_theta(bra, ket)
+        rdm = calc_rdm_opt(bra, theta)
+        return self.enuc + self.calc_e1b(rdm) + self.calc_e2b_opt(bra, theta)
 
     def make_proj_op(self, trial):
         """generate the modified hmf, vhs and enuc for projection"""
