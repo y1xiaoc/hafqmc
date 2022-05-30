@@ -7,6 +7,7 @@ from functools import partial
 
 from .utils import _t_real, _t_cplx
 from .utils import fix_init, symmetrize, Serial, cmult
+from .hamiltonian import _align_rdm
 
 
 class OneBody(nn.Module):
@@ -52,10 +53,10 @@ class AuxField(nn.Module):
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
             fields += step * vbar0
         if trdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
+            _, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
+            log_weight += - fields @ fshift - 0.5 * (fshift ** 2).sum()
             fields += fshift
-            log_weight += 0.5 * (fshift ** 2).sum()
         vhs_sum = jnp.tensordot(fields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
@@ -104,10 +105,10 @@ class AuxFieldNet(AuxField):
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
             nfields += step * vbar0
         if trdm is not None:
-            vhs, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
+            _, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
+            log_weight += - nfields @ fshift - 0.5 * (fshift ** 2).sum()
             nfields += fshift
-            log_weight += 0.5 * (fshift ** 2).sum()
         vhs_sum = jnp.tensordot(nfields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
@@ -116,6 +117,9 @@ class AuxFieldNet(AuxField):
 def meanfield_subtract(vhs, rdm, cutoff=None):
     if rdm.ndim == 3:
         rdm = rdm.sum(0)
+    nao = vhs.shape[-1]
+    if rdm.shape[-1] == nao * 2:
+        rdm = rdm[:nao, :nao] + rdm[nao:, nao:]
     nelec = lax.stop_gradient(rdm).trace().real
     vbar = jnp.einsum("kpq,pq->k", vhs, rdm)
     if cutoff is not None:
