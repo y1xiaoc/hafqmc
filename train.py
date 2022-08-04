@@ -99,9 +99,10 @@ def make_evaluation_step(expect_fn, mc_sampler):
 
 def train(cfg: ConfigDict):
     # handle logging
-    numeric_level = getattr(logging, cfg.log.level.upper())
-    logging.basicConfig(level=numeric_level,
-        format='# [%(asctime)s] %(levelname)s: %(message)s')
+    logging.basicConfig(force=True, format='# [%(asctime)s] %(levelname)s: %(message)s')
+    logger = logging.getLogger("train")
+    log_level = getattr(logging, cfg.log.level.upper())
+    logger.setLevel(log_level)
     writer = SummaryWriter(cfg.log.stat_path)
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
                     "exp_es": ".4f", "exp_s": ".4f"}
@@ -118,32 +119,32 @@ def train(cfg: ConfigDict):
     sample_size = cfg.sample.size
     sample_batch = cfg.sample.batch
     if sample_size % sample_batch != 0:
-        logging.warning("Sample size not divisible by batch size, rounding up")
+        logger.warning("Sample size not divisible by batch size, rounding up")
     sample_step = -(-sample_size // sample_batch)
     sample_size = sample_batch * sample_step
     sample_prop = cfg.sample.prop_steps
     eval_batch = cfg.optim.batch if cfg.optim.batch is not None else sample_batch
     if sample_size % eval_batch != 0:
-        logging.warning("Eval batch size not dividing sample size, using sample batch size")
+        logger.warning("Eval batch size not dividing sample size, using sample batch size")
         eval_batch = sample_batch
 
     # set up the hamiltonian
     if cfg.restart.hamiltonian is None:
-        logging.info("Building molecule and doing HF calculation to get Hamiltonian")
+        logger.info("Building molecule and doing HF calculation to get Hamiltonian")
         mf = build_mf(**cfg.molecule)
         print(f"# HF energy from pyscf calculation: {mf.e_tot}")
         if not mf.converged:
-            logging.warning("HF calculation does not converge!")
+            logger.warning("HF calculation does not converge!")
         hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
-        logging.info("Loading Hamiltonian from saved file")
+        logger.info("Loading Hamiltonian from saved file")
         hamil_data = load_pickle(cfg.restart.hamiltonian)
         hamiltonian = Hamiltonian(*hamil_data, full_eri=cfg.hamiltonian.full_eri)
         print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
 
     # set up all other classes and functions
-    logging.info("Setting up the training loop")
+    logger.info("Setting up the training loop")
     ansatz = Ansatz.create(hamiltonian, **cfg.ansatz)
     trial = (None if cfg.trial is None 
              else ansatz if isinstance(cfg.trial, str) and 
@@ -180,27 +181,27 @@ def train(cfg: ConfigDict):
     
     # set up all states
     if cfg.restart.states is None:
-        logging.info("Initializing parameters and states")
+        logger.info("Initializing parameters and states")
         key = jax.random.PRNGKey(cfg.seed)
         key, pakey, mckey = jax.random.split(key, 3)
         fshape = braket.fields_shape()
         if cfg.restart.params is None:
             params = jax.jit(braket.init)(pakey, tree_map(jnp.zeros, fshape))
         else:
-            logging.info("Loading parameters from saved file")
+            logger.info("Loading parameters from saved file")
             params = load_pickle(cfg.restart.params)
             if isinstance(params, tuple): params = params[1]
             if isinstance(params, tuple): params = params[1]
         mc_state = mc_sampler.init(mckey, params)
         opt_state = optimizer.init(params)
         if cfg.sample.burn_in > 0:
-            logging.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
+            logger.info(f"Burning in the sampler for {cfg.sample.burn_in} steps")
             key, subkey = jax.random.split(key)
             mc_state = sampler_1s_nc.burn_in(subkey, params, mc_state, cfg.sample.burn_in)
         ebar = hamiltonian.local_energy() if cfg.optim.baseline is not None else None
         train_state = TrainingState(0, params, mc_state, opt_state, ebar)
     else:
-        logging.info("Loading parameters and states from saved file")
+        logger.info("Loading parameters and states from saved file")
         key, *rest = load_pickle(cfg.restart.states)
         rest = rest[0] if len(rest) == 1 else (0, *rest)
         if len(rest) < 5 and cfg.optim.baseline is not None:
@@ -208,7 +209,7 @@ def train(cfg: ConfigDict):
         train_state = TrainingState(*rest)
 
     # the actual training iteration
-    logging.info("Start training")
+    logger.info("Start training")
     printer.print_header(prefix="# ")
     for ii in range(total_iter + 1):
         printer.reset_timer()
