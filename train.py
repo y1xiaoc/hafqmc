@@ -25,7 +25,11 @@ def upper_penalty(s, factor=1., target=1., power=2.):
 
 
 def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
-    opt_fn = getattr(optax_alias, name)
+    if name == "shampoo":
+        from .shampoo.distributed_shampoo import distributed_shampoo
+        opt_fn = distributed_shampoo
+    else:
+        opt_fn = getattr(optax_alias, name)
     opt = opt_fn(lr_schedule, **kwargs)
     if grad_clip is not None:
         opt = optax.chain(optax.clip(grad_clip), opt)
@@ -91,7 +95,7 @@ def make_evaluation_step(expect_fn, mc_sampler):
         sampler = mc_sampler.switch(sample_flag) if is_union else mc_sampler
         mc_state, data = sampler.sample(key, params, mc_state)
         e_tot, aux = expect_fn(params, data)
-        new_state = TrainingState(ii+1, params, mc_state, *other)
+        new_state = TrainingState(ii, params, mc_state, *other) # no ii+1 for eval
         return new_state, (e_tot, aux)
     
     return step
@@ -224,8 +228,7 @@ def train(cfg: ConfigDict):
         # logging anc checkpointing
         if ii % cfg.log.stat_freq == 0:
             if sflag is not None: aux["nprop"] = sflag
-            _lr = (lr_schedule(train_state.opt_state[-1][0].count) 
-                if callable(lr_schedule) else lr_schedule)
+            _lr = lr_schedule(train_state.step) if callable(lr_schedule) else lr_schedule
             printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
             writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
         if ii % cfg.log.ckpt_freq == 0:
