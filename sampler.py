@@ -7,7 +7,7 @@ from typing import NamedTuple, Callable, Tuple, Union, Dict
 
 from .ansatz import BraKet
 from .utils import PyTree, Array
-from .utils import ravel_shape, tree_where
+from .utils import ravel_shape, tree_where, tree_map
 
 
 KeyArray = Array
@@ -108,7 +108,7 @@ def make_batched(sampler: Sampler, nbatch: int, concat: bool = False):
         vkey = jax.random.split(key, nbatch)
         new_state, data = jax.vmap(sample_fn, (0, None, 0))(vkey, params, state)
         if concat:
-            data = jax.tree_map(jnp.concatenate, data)
+            data = tree_map(jnp.concatenate, data)
         return new_state, data
     def init(key, params):
         vkey = jax.random.split(key, nbatch)
@@ -130,7 +130,7 @@ def make_multistep_fn(sample_fn, nstep, concat=False):
         keys = jax.random.split(key, nstep)
         new_state, data = lax.scan(inner, state, keys)
         if concat:
-            data = jax.tree_map(jnp.concatenate, data)
+            data = tree_map(jnp.concatenate, data)
         return new_state, data
     return multi_sample
 

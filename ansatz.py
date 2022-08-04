@@ -7,7 +7,7 @@ import dataclasses
 from typing import Sequence, Union, Tuple, Optional
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, parse_bool
+from .utils import fix_init, parse_bool, tree_map
 from .propagator import Propagator
 from .hamiltonian import calc_slov, _has_spin, _make_ghf
 
@@ -59,8 +59,8 @@ class Ansatz(nn.Module):
     def __call__(self, fields):
         if isinstance(fields, ndarray):
             fields = (fields,)
-        assert (jax.tree_map(jnp.shape, fields) 
-                == jax.tree_map(tuple, self.fields_shape(len(fields))))
+        assert (tree_map(jnp.shape, fields) 
+                == tree_map(tuple, self.fields_shape(len(fields))))
         wfn = self.wfn
         log_weight = 0.
         for prop, flds in zip(self.propagators, fields):
@@ -78,7 +78,7 @@ class BraKet(nn.Module):
         lmp, rmp = (max_prop if isinstance(max_prop, (tuple, list))
                     else (max_prop, max_prop))
         if self.trial is None:
-            return jax.tree_map(lambda s: onp.array((2, *s)), 
+            return tree_map(lambda s: onp.array((2, *s)), 
                     self.ansatz.fields_shape(rmp))
         else:
             return (self.trial.fields_shape(lmp), 
@@ -87,8 +87,8 @@ class BraKet(nn.Module):
     def __call__(self, fields):
         if self.trial is None:
             out = jax.vmap(self.ansatz)(fields)
-            bra_out = jax.tree_map(lambda x: x[0], out)
-            ket_out = jax.tree_map(lambda x: x[1], out)
+            bra_out = tree_map(lambda x: x[0], out)
+            ket_out = tree_map(lambda x: x[1], out)
         else:
             bra_out = self.trial(fields[0])
             ket_out = self.ansatz(fields[1])

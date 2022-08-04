@@ -14,7 +14,7 @@ from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
 from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
-from .utils import make_moving_avg, PyTree
+from .utils import make_moving_avg, PyTree, tree_map
 
 
 def lower_penalty(s, factor=1., target=1., power=2.):
@@ -73,7 +73,7 @@ def make_training_step(loss_and_grad, mc_sampler, optimizer, accumulator=None):
         mc_state = sampler.refresh(mc_state, params)
         mc_state, data = sampler.sample(key, params, mc_state)
         (loss, aux), grads = loss_and_grad(params, data, ebar)
-        grads = jax.tree_map(jnp.conj, grads) # for complex parameters
+        grads = tree_map(jnp.conj, grads) # for complex parameters
         updates, opt_state = optimizer.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         if accumulator is not None: ebar = accumulator(ebar, aux["e_tot"], ii)
@@ -185,7 +185,7 @@ def train(cfg: ConfigDict):
         key, pakey, mckey = jax.random.split(key, 3)
         fshape = braket.fields_shape()
         if cfg.restart.params is None:
-            params = jax.jit(braket.init)(pakey, jax.tree_map(jnp.zeros, fshape))
+            params = jax.jit(braket.init)(pakey, tree_map(jnp.zeros, fshape))
         else:
             logging.info("Loading parameters from saved file")
             params = load_pickle(cfg.restart.params)

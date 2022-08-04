@@ -2,6 +2,7 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 from jax import scipy as jsp
+from jax.tree_util import tree_map
 from flax import linen as nn
 from ml_collections import ConfigDict
 from typing import Dict, Sequence, Union, Callable, Any, Optional
@@ -135,13 +136,13 @@ def make_moving_avg(decay=0.99, early_growth=True):
 
 def ravel_shape(target_shape):
     from jax.flatten_util import ravel_pytree
-    tmp = jax.tree_map(jnp.zeros, target_shape)
+    tmp = tree_map(jnp.zeros, target_shape)
     flat, unravel_fn = ravel_pytree(tmp)
     return flat.size, unravel_fn
 
 
 def tree_where(condition, x, y):
-    return jax.tree_map(partial(jnp.where, condition), x, y)
+    return tree_map(partial(jnp.where, condition), x, y)
 
 
 def fix_init(key, value, dtype=None, random=0., rnd_additive=False):
@@ -223,7 +224,7 @@ def load_pickle(filename):
 def cfg_to_dict(cfg):
     if not isinstance(cfg, ConfigDict):
         return cfg
-    return jax.tree_map(cfg_to_dict, cfg.to_dict())
+    return tree_map(cfg_to_dict, cfg.to_dict())
 
 def cfg_to_yaml(cfg):
     import yaml

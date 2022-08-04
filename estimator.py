@@ -3,7 +3,7 @@ from jax import lax
 from jax import numpy as jnp
 from functools import partial
 
-from .utils import paxis, just_grad
+from .utils import paxis, just_grad, tree_map
 from .hamiltonian import Hamiltonian
 from .ansatz import BraKet
 
@@ -97,11 +97,11 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         fshape = braket.fields_shape(len(fields) if braket.trial is None
                                      else tuple(map(len, fields)))
         # _f0 and _fs0 are just for checking the shape
-        _f0 = jax.tree_leaves(fields)[0]
-        _fs0 = jax.tree_leaves(fshape)[0]
+        _f0 = jax.tree_util.tree_leaves(fields)[0]
+        _fs0 = jax.tree_util.tree_leaves(fshape)[0]
         if _f0.ndim != _fs0.size + 2:
             batch = min(_f0.size // _fs0.prod(), default_batch)
-            fields = jax.tree_map(lambda x,s: x.reshape(-1, batch, *s), fields, fshape)
+            fields = tree_map(lambda x,s: x.reshape(-1, batch, *s), fields, fshape)
             if logsw is not None:
                 logsw = logsw.reshape(-1, batch)
         return fields, logsw
@@ -153,7 +153,7 @@ def make_eval_total(hamil: Hamiltonian, braket: BraKet,
         data = check_shape(data)
         fields, logsw = data
         eval_fn = partial(batch_eval, params)
-        if jax.tree_leaves(fields)[0].shape[0] > 1:
+        if jax.tree_util.tree_leaves(fields)[0].shape[0] > 1:
             eval_fn = jax.checkpoint(eval_fn, prevent_cse=False)
         eloc, sign, logov = lax.map(eval_fn, fields)
         etot, aux_data = calc_statistics(eloc, sign, logov, logsw, ebar)
