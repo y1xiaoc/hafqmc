@@ -26,7 +26,7 @@ def upper_penalty(s, factor=1., target=1., power=2.):
 
 def make_optimizer(name, lr_schedule, grad_clip=None, **kwargs):
     opt_fn = getattr(optax_alias, name)
-    opt = opt_fn(lr_schedule, *kwargs)
+    opt = opt_fn(lr_schedule, **kwargs)
     if grad_clip is not None:
         opt = optax.chain(optax.clip(grad_clip), opt)
     return opt
