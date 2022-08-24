@@ -66,6 +66,7 @@ class ParameterStats(NamedTuple):
   diagonal_statistics: QuantizedValue  # Accumulator for diagonal preconditioner
   statistics: List[Any]  # Statistics (QuantizedValue, chex.Array)
   preconditioners: List[Any]  # Preconditioners (QuantizedValue, chex.Array)
+  raw_momentum: QuantizedValue # Momentum for raw sgd gradients
   diagonal_momentum: QuantizedValue  # Momentum for the diagonal preconditioner
   momentum: QuantizedValue  # Momentum for the shampoo preconditioner
   training_metrics: TrainingMetrics  # Metrics (optional for training).
@@ -88,6 +89,7 @@ class GlobalShardedParameterStats:
 class LocalShardedParameterStats:
   """State associated to each parameter of the model being trained."""
   diagonal_statistics: QuantizedValue  # Accumulator for diagonal preconditioner
+  raw_momentum: QuantizedValue
   diagonal_momentum: QuantizedValue  # Momentum for the diagonal preconditioner
   momentum: QuantizedValue  # Momentum for the shampoo preconditioner
   training_metrics: TrainingMetrics  # Metrics (optional for training).
@@ -142,6 +144,7 @@ class GraftingType(enum.IntEnum):
   RMSPROP_NORMALIZED = 4
   SQRT_N = 5
   ADAGRAD_NORMALIZED = 6
+  ADABELIEF = 7
 
 
 class PreconditionerType(enum.IntEnum):
@@ -837,13 +840,15 @@ def _convert_to_parameter_stats(global_stats,
   if not convert_statistics:
     new_statistics = None
   return ParameterStats(local_stat.diagonal_statistics, new_statistics,
-                        new_preconditioners, local_stat.diagonal_momentum,
-                        local_stat.momentum, local_stat.training_metrics)
+                        new_preconditioners, local_stat.raw_momentum, 
+                        local_stat.diagonal_momentum, local_stat.momentum, 
+                        local_stat.training_metrics)
 
 
 def _convert_from_parameter_stats(parameter_stats, local_stats):
   """Creates sharded stats from paramter stats."""
   return LocalShardedParameterStats(parameter_stats.diagonal_statistics,
+                                    parameter_stats.raw_momentum,
                                     parameter_stats.diagonal_momentum,
                                     parameter_stats.momentum,
                                     parameter_stats.training_metrics,
@@ -867,6 +872,7 @@ def _add_error_into_local_stats(local_stats, errors, inverse_failure_threshold):
           per_stat_error, local_stat.training_metrics.inverse_pth_root_errors)
     new_local_stats.append(
         LocalShardedParameterStats(local_stat.diagonal_statistics,
+                                   local_stat.raw_momentum,
                                    local_stat.diagonal_momentum,
                                    local_stat.momentum,
                                    TrainingMetrics(per_stat_error),
@@ -1139,12 +1145,14 @@ def distributed_shampoo(
 
       diagonal_statistics = _quantize_diagonal_statistics(
           jnp.zeros_like(param))
+      raw_momentum = _quantize_momentum(jnp.zeros_like(param))
       diagonal_momentum = _quantize_momentum(jnp.zeros_like(param))
       momentum = _quantize_momentum(jnp.zeros_like(param))
 
       local_stats_flat.append(
           LocalShardedParameterStats(
               diagonal_statistics,
+              raw_momentum,
               diagonal_momentum,
               momentum, init_training_metrics(len(sizes)),
               index_start, sizes))
@@ -1226,17 +1234,22 @@ def distributed_shampoo(
         num_statistics += len(shapes)
 
       qdtype = quantized_dtype_for_momentum_buffers(param)
+      m0_pspec = param_pspec
       m1_pspec = param_pspec
       m2_pspec = param_pspec
+      m0_scale_pspec = []
       m1_scale_pspec = []
       m2_scale_pspec = []
       if qdtype != _fdtype:
+        m0_scale_pspec = _remove_leading_sharding_annotation(m0_pspec)
         m1_scale_pspec = _remove_leading_sharding_annotation(m1_pspec)
         m2_scale_pspec = _remove_leading_sharding_annotation(m2_pspec)
 
       local_stats_flat.append(
           LocalShardedParameterStats(
               QuantizedValue(param_pspec, [], [], _fdtype, False,
+                             list(param.shape)),
+              QuantizedValue(m0_pspec, [], m0_scale_pspec, qdtype, False,
                              list(param.shape)),
               QuantizedValue(m1_pspec, [], m1_scale_pspec, qdtype, False,
                              list(param.shape)),
@@ -1279,11 +1292,14 @@ def distributed_shampoo(
         num_statistics += len(shapes)
 
       qdtype = quantized_dtype_for_momentum_buffers(param)
+      m0_shape_and_dtype = [list(param.shape), param.dtype]
       m1_shape_and_dtype = [list(param.shape), param.dtype]
       m2_shape_and_dtype = [list(param.shape), param.dtype]
+      m0_scale_shape_and_dtype = []
       m1_scale_shape_and_dtype = []
       m2_scale_shape_and_dtype = []
       if qdtype != _fdtype:
+        m0_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
         m1_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
         m2_scale_shape_and_dtype = [list(param.shape)[1:], qdtype]
 
@@ -1292,6 +1308,8 @@ def distributed_shampoo(
           LocalShardedParameterStats(
               QuantizedValue(diagonal_statistics_shape_and_dtype, [], [],
                              _fdtype, False, list(param.shape)),
+              QuantizedValue(m0_shape_and_dtype, [], m0_scale_shape_and_dtype,
+                             qdtype, False, list(param.shape)),
               QuantizedValue(m1_shape_and_dtype, [], m1_scale_shape_and_dtype,
                              qdtype, False, list(param.shape)),
               QuantizedValue(m2_shape_and_dtype, [], m2_scale_shape_and_dtype,
@@ -1440,14 +1458,18 @@ def distributed_shampoo(
       if _graft_type_has_diagonal_statistics():
         diagonal_statistics = jnp.zeros_like(param)
 
+      raw_momentum = _quantize_momentum(jnp.zeros_like(param))
       diagonal_momentum = _quantize_momentum(jnp.zeros_like(param))
       momentum = _quantize_momentum(jnp.zeros_like(param))
 
       return ParameterStats(
           _quantize_diagonal_statistics(diagonal_statistics),
           _maybe_quantize_statistics(statistics),
-          _maybe_quantize_preconditioners(preconditioners), diagonal_momentum,
-          momentum, init_training_metrics(len(statistics)))
+          _maybe_quantize_preconditioners(preconditioners), 
+          raw_momentum,
+          diagonal_momentum,
+          momentum, 
+          init_training_metrics(len(statistics)))
 
     return ShampooState(
         count=jnp.zeros([], jnp.int32), stats=jax.tree_util.tree_map(_init, params))
@@ -1485,8 +1507,9 @@ def distributed_shampoo(
       else:
         new_statistics = compute_updated_statistics()
     return ParameterStats(state.diagonal_statistics, new_statistics,
-                          state.preconditioners, state.diagonal_momentum,
-                          state.momentum, state.training_metrics)
+                          state.preconditioners, state.raw_momentum,
+                          state.diagonal_momentum, state.momentum, 
+                          state.training_metrics)
 
   mi_pth_root = functools.partial(
       matrix_inverse_pth_root,
@@ -1660,8 +1683,9 @@ def distributed_shampoo(
       new_training_metrics = TrainingMetrics(new_errors)
       new_states.append(
           ParameterStats(state.diagonal_statistics, state.statistics,
-                         new_preconditioners, state.diagonal_momentum,
-                         state.momentum, new_training_metrics))
+                         new_preconditioners, state.raw_momentum, 
+                         state.diagonal_momentum, state.momentum, 
+                         new_training_metrics))
 
     return new_states
 
@@ -1850,8 +1874,9 @@ def distributed_shampoo(
       new_training_metrics = TrainingMetrics(new_errors)
       new_states.append(
           ParameterStats(state.diagonal_statistics, state.statistics,
-                         new_preconditioners, state.diagonal_momentum,
-                         state.momentum, new_training_metrics))
+                         new_preconditioners, state.raw_momentum, 
+                         state.diagonal_momentum, state.momentum, 
+                         new_training_metrics))
 
     return new_states
 
@@ -1963,8 +1988,9 @@ def distributed_shampoo(
       new_training_metrics = TrainingMetrics(new_errors)
       new_states.append(
           ParameterStats(state.diagonal_statistics, state.statistics,
-                         new_preconditioners, state.diagonal_momentum,
-                         state.momentum, new_training_metrics))
+                         new_preconditioners, state.raw_momentum, 
+                         state.diagonal_momentum, state.momentum, 
+                         new_training_metrics))
 
     return new_states
 
@@ -2028,6 +2054,9 @@ def distributed_shampoo(
     sgd_update = grad
     new_diagonal_statistics = state.diagonal_statistics.to_float()
 
+    old_raw_momentum = state.raw_momentum.to_float()
+    new_raw_momentum = optax.update_moment(sgd_update, old_raw_momentum, beta1, 1)
+
     if (graft_type == GraftingType.ADAGRAD or
         graft_type == GraftingType.ADAGRAD_NORMALIZED):
 
@@ -2040,6 +2069,7 @@ def distributed_shampoo(
       adagrad_update = scaled_grad / (
           jnp.sqrt(new_diagonal_statistics) + diagonal_epsilon)
       grafting_update = adagrad_update
+      
     elif (graft_type == GraftingType.RMSPROP or
           graft_type == GraftingType.RMSPROP_NORMALIZED):
 
@@ -2064,8 +2094,24 @@ def distributed_shampoo(
         rmsprop_update /= clipping_denom
 
       grafting_update = rmsprop_update
+
     elif graft_type == GraftingType.SGD:
       grafting_update = sgd_update
+
+    elif graft_type == GraftingType.ADABELIEF:
+      scaled_grad = grad
+      prediction_error = grad - new_raw_momentum
+      old_diagonal_statistics = state.diagonal_statistics.to_float()
+
+      new_diagonal_statistics = optax.update_moment_per_elem_norm(
+          prediction_error, old_diagonal_statistics, beta2, 2)
+      unbiased_diagonal_statistics = optax.bias_correction(
+          new_diagonal_statistics, beta2, step+1)
+      belief_update = scaled_grad / (
+          jnp.sqrt(unbiased_diagonal_statistics) + diagonal_epsilon)
+      
+      grafting_update = belief_update
+
     else:
       grafting_update = jnp.ones_like(sgd_update) * jnp.sign(sgd_update)
 
@@ -2135,6 +2181,7 @@ def distributed_shampoo(
     param_stats = ParameterStats(
         _quantize_diagonal_statistics(new_diagonal_statistics),
         state.statistics, state.preconditioners,
+        _quantize_momentum(new_raw_momentum),
         _quantize_momentum(new_diagonal_momentum),
         _quantize_momentum(new_momentum), state.training_metrics)
 
