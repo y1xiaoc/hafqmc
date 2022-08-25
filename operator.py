@@ -7,7 +7,7 @@ from functools import partial
 
 from .utils import _t_real, _t_cplx
 from .utils import fix_init, symmetrize, Serial, cmult
-from .hamiltonian import _align_rdm
+from .hamiltonian import _align_rdm, calc_rdm
 
 
 class OneBody(nn.Module):
@@ -32,7 +32,7 @@ class OneBody(nn.Module):
 
 class AuxField(nn.Module):
     init_vhs : jnp.ndarray
-    trial_rdm : Optional[jnp.ndarray] = None
+    trial_wfn : Optional[jnp.ndarray] = None
     parametrize : bool = False
     init_random : float = 0.
     hermite_out : bool = False
@@ -45,6 +45,8 @@ class AuxField(nn.Module):
         else:
             self.vhs = self.init_vhs
         self.nhs = self.init_vhs.shape[0]
+        self.trial_rdm = (calc_rdm(self.trial_wfn, self.trial_wfn) 
+            if self.trial_wfn is not None else None)
 
     def __call__(self, step, fields, trdm=None):
         vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs

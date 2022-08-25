@@ -23,16 +23,17 @@ class Propagator(nn.Module):
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
     expm_option : Union[str, tuple] = ()
-    parametrize : Union[bool, str, Sequence[str]] = True
     timevarying : Union[bool, str, Sequence[str]] = False
+    sqrt_tsvpar : bool = False
+    dyn_mfshift : bool = False
+    priori_mask : Optional[ndarray] = None
+    # TODO: below are parameters to be moved to create function
+    mfshift_wfn : Optional[Tuple[ndarray, ndarray]] = None
+    parametrize : Union[bool, str, Sequence[str]] = True
     use_complex : Union[bool, str, Sequence[str]] = False
     aux_network : Union[None, Sequence[int], dict] = None
     init_random : float = 0.
     hermite_ops : bool = False
-    sqrt_tsvpar : bool = False
-    mfshift_wfn : Optional[Tuple[ndarray, ndarray]] = None
-    dyn_mfshift : bool = False
-    priori_mask : Optional[ndarray] = None
 
     @nn.nowrap
     @classmethod
@@ -133,11 +134,9 @@ class Propagator(nn.Module):
         else:
             AuxFieldCls = AuxFieldNet
             network_args = ensure_mapping(self.aux_network, "hidden_sizes")
-        _trdm = (calc_rdm(self.mfshift_wfn, self.mfshift_wfn) 
-                if self.mfshift_wfn is not None else None)
         _vop = AuxFieldCls(
             self.init_vhs,
-            trial_rdm=_trdm,
+            trial_wfn=self.mfshift_wfn,
             parametrize=_pd["vhs"],
             init_random=self.init_random,
             hermite_out=self.hermite_ops,
@@ -159,8 +158,9 @@ class Propagator(nn.Module):
             hmf = self.hmf_ops[ii](_ts_h[ii])
             return self.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
-            trdm = (calc_rdm(self.mfshift_wfn, unpack_spin(wfn, nelec))
-                if self.dyn_mfshift and self.mfshift_wfn is not None else None)
+            twfn = self.vhs_ops[ii].trial_wfn
+            trdm = (calc_rdm(twfn, unpack_spin(wfn, nelec))
+                if self.dyn_mfshift and twfn is not None else None)
             vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii], trdm=trdm)
             return self.expm_apply(vhs * self.vmask, wfn), lw
         def nmlz(wfn, ii):
