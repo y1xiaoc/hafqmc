@@ -17,13 +17,14 @@ from .hamiltonian import calc_rdm, _make_ghf, _has_spin
 
 
 class Propagator(nn.Module):
-    init_hmf : ndarray
-    init_vhs : ndarray
-    init_enuc : float
+    hmf_op : nn.Module
+    vhs_op : nn.Module
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
     expm_option : Union[str, tuple] = ()
     timevarying : Union[bool, str, Sequence[str]] = False
+    para_tsteps : bool = False
+    cplx_tsteps : bool = False
     sqrt_tsvpar : bool = False
     dyn_mfshift : bool = False
     priori_mask : Optional[ndarray] = None
@@ -45,9 +46,19 @@ class Propagator(nn.Module):
 
     @nn.nowrap
     @classmethod
-    def create_normal(cls, hamiltonian, init_tsteps, *, 
-                      max_nhs=None, mf_subtract=False, spin_mixing=False, 
-                      **init_kwargs):
+    def create_normal(cls, 
+            hamiltonian, 
+            init_tsteps, *, 
+            max_nhs : Optional[int] = None,
+            parametrize : Union[bool, str, Sequence[str]] = True,
+            use_complex : Union[bool, str, Sequence[str]] = False,
+            aux_network : Union[None, Sequence[int], dict] = None,
+            init_random : float = 0.,
+            hermite_ops : bool = False,
+            mf_subtract : bool = False, 
+            spin_mixing : Union[bool, float, complex] = False, 
+            **init_kwargs):
+        # prepare data
         twfn = hamiltonian.wfn0
         init_hmf, init_vhs, init_enuc = hamiltonian.make_proj_op(twfn)
         if max_nhs is not None:
@@ -59,31 +70,89 @@ class Propagator(nn.Module):
             init_vhs = jax.vmap(block_spin, (0,0,None))(init_vhs, init_vhs, ptb)
             twfn = _make_ghf(twfn)
         mfwfn = twfn if mf_subtract else None
-        return cls(init_hmf, init_vhs, init_enuc, 
-            init_tsteps=init_tsteps, mfshift_wfn=mfwfn, **init_kwargs)
+        # handle parameter options
+        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
+        _ifcplx = lambda t: _t_cplx if t else _t_real
+        _cd = parse_bool(("hmf", "vhs", "tsteps"), use_complex)
+        # make one body operator
+        hmf_op = OneBody(
+            init_hmf, 
+            parametrize=_pd["hmf"], 
+            init_random=init_random,
+            hermite_out=hermite_ops,
+            dtype=_ifcplx(_cd["hmf"]))
+        # make two body operator
+        if aux_network is None:
+            AuxFieldCls = AuxField
+            network_args = {}
+        else:
+            AuxFieldCls = AuxFieldNet
+            network_args = ensure_mapping(aux_network, "hidden_sizes")
+        vhs_op = AuxFieldCls(
+            init_vhs,
+            trial_wfn=mfwfn,
+            parametrize=_pd["vhs"],
+            init_random=init_random,
+            hermite_out=hermite_ops,
+            dtype=_ifcplx(_cd["vhs"]),
+            **network_args)
+        # build propagator
+        return cls(hmf_op, vhs_op, 
+            init_tsteps=init_tsteps, 
+            para_tsteps=_pd["tsteps"], 
+            cplx_tsteps=_cd["tsteps"], 
+            **init_kwargs)
     
     @nn.nowrap
     @classmethod
-    def create_ccsd(cls, hamiltonian, *, 
-                    with_mask=True, use_complex=False,
-                    expm_option=(), mf_subtract=False, **init_kwargs):
+    def create_ccsd(cls, 
+            hamiltonian, *, 
+            with_mask : bool =True, 
+            expm_option : Union[str, tuple] = (),
+            parametrize : Union[bool, str, Sequence[str]] = True,
+            use_complex : Union[bool, str, Sequence[str]] = False,
+            init_random : float = 0.,
+            mf_subtract : bool = False, 
+            **init_kwargs):
+        # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         if with_mask:
             expm_option = ("loop", 1, 1)
         else:
             mask = None
-        _cd = parse_bool(("hmf", "tsteps"), use_complex)
-        use_complex = "vhs" + ",".join(k for k in _cd if _cd[k])
         mfwfn = hamiltonian.wfn0 if mf_subtract else None
-        return cls(init_hmf, init_vhs, 0, init_tsteps=[-1.], 
-            expm_option=expm_option, use_complex=use_complex,
-            hermite_ops=False, aux_network=None, sqrt_tsvpar=False,
-            priori_mask=mask, mfshift_wfn=mfwfn, **init_kwargs)
+        # handle parameter options
+        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
+        _ifcplx = lambda t: _t_cplx if t else _t_real
+        _cd = parse_bool(("hmf", "tsteps"), use_complex)
+        # make one body operator
+        hmf_op = OneBody(
+            init_hmf, 
+            parametrize=_pd["hmf"], 
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_ifcplx(_cd["hmf"]))
+        # make two body operator
+        vhs_op = AuxField(
+            init_vhs,
+            trial_wfn=mfwfn,
+            parametrize=_pd["vhs"],
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_t_cplx)
+        return cls(hmf_op, vhs_op, 
+            init_tsteps=[-1.], 
+            expm_option=expm_option,
+            para_tsteps=_pd["tsteps"], 
+            cplx_tsteps=_cd["tsteps"], 
+            sqrt_tsvpar=False,
+            priori_mask=mask, 
+            **init_kwargs)
             
     @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
-        nfield = self.init_vhs.shape[0]
+        nfield = self.vhs_op.init_vhs.shape[0]
         return onp.array((nts, nfield))
 
     def setup(self):
@@ -91,26 +160,18 @@ class Propagator(nn.Module):
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
         self.expm_apply = _warp_spin(make_expm_apply(*_expm_op))
-        # decide whether to make quantities changeable / parametrized in complex
-        _ifcplx = lambda t: _t_cplx if t else _t_real
-        _td = {k: _ifcplx(v) for k, v in 
-               parse_bool(("hmf", "vhs", "tsteps"), self.use_complex).items()}
-        _pd = parse_bool(("hmf", "vhs", "enuc", "tsteps"), self.parametrize)
-        _vd = parse_bool(("hmf", "vhs"), self.timevarying)
         # handle the time steps, for Hmf and Vhs separately
+        _t_tsteps = _t_cplx if self.cplx_tsteps else _t_real
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
         if self.sqrt_tsvpar:
             _ts_v = jnp.sqrt(_ts_v if self.use_complex else jnp.abs(_ts_v))
-        self.ts_v = (self.param("ts_v", fix_init, _ts_v, _td["tsteps"]) 
-                     if _pd["tsteps"] else _ts_v)
-        self.ts_h = (self.param("ts_h", fix_init, _ts_h, _td["tsteps"]) 
-                     if _pd["tsteps"] else _ts_h)
+        self.ts_v = (self.param("ts_v", fix_init, _ts_v, _t_tsteps) 
+                     if self.para_tsteps else _ts_v)
+        self.ts_h = (self.param("ts_h", fix_init, _ts_h, _t_tsteps) 
+                     if self.para_tsteps else _ts_h)
         self.nts_h = self.ts_h.shape[0]
         self.nts_v = self.ts_v.shape[0]
-        # core energy, should be useless
-        self.enuc = (self.param("enuc", fix_init, self.init_enuc, _t_real) 
-                     if _pd["enuc"] else self.init_enuc)
         # operator prioir masks
         if self.priori_mask is None:
             self.hmask = self.vmask = 1
@@ -118,38 +179,22 @@ class Propagator(nn.Module):
             self.hmask, self.vmask = self.priori_mask
         else:
             self.hmask = self.vmask = self.priori_mask
-        # build Hmf operator
-        _hop = OneBody(
-            self.init_hmf, 
-            parametrize=_pd["hmf"], 
-            init_random=self.init_random,
-            hermite_out=self.hermite_ops,
-            dtype=_td["hmf"])
+        # handle the option for time varying operators
+        _vd = parse_bool(("hmf", "vhs"), self.timevarying)
+        # build Hmf operators
+        _hop = self.hmf_op.clone()
         self.hmf_ops = [_hop.clone() if _vd["hmf"] else _hop 
                         for _ in range(self.nts_h)]
-        # build Vhs operator
-        if self.aux_network is None:
-            AuxFieldCls = AuxField
-            network_args = {}
-        else:
-            AuxFieldCls = AuxFieldNet
-            network_args = ensure_mapping(self.aux_network, "hidden_sizes")
-        _vop = AuxFieldCls(
-            self.init_vhs,
-            trial_wfn=self.mfshift_wfn,
-            parametrize=_pd["vhs"],
-            init_random=self.init_random,
-            hermite_out=self.hermite_ops,
-            dtype=_td["vhs"],
-            **network_args)
+        # build Vhs operators
+        _vop = self.vhs_op.clone()
         self.vhs_ops = [_vop.clone() if _vd["vhs"] else _vop 
                         for _ in range(self.nts_v)]
 
     def __call__(self, wfn, fields):
-        if _has_spin(wfn) and wfn[0].shape[0] < self.init_hmf.shape[-1]:
+        if _has_spin(wfn) and wfn[0].shape[0] < self.hmf_op.init_hmf.shape[-1]:
             wfn = _make_ghf(wfn)
         wfn, nelec = pack_spin(wfn)
-        log_weight = self.enuc # + 0.5 * self.nts_v * self.nsite
+        log_weight = 0. # + 0.5 * self.nts_v * self.nsite
         # get prop times
         _ts_h = -self.ts_h # the negation of t goes to here
         _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
