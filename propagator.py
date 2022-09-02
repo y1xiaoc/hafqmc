@@ -21,7 +21,6 @@ class Propagator(nn.Module):
     vhs_op : nn.Module
     init_tsteps : Sequence[float]
     ortho_intvl : int = 0
-    expm_option : Union[str, tuple] = ()
     timevarying : Union[bool, str, Sequence[str]] = False
     para_tsteps : bool = False
     cplx_tsteps : bool = False
@@ -50,6 +49,7 @@ class Propagator(nn.Module):
             hamiltonian, 
             init_tsteps, *, 
             max_nhs : Optional[int] = None,
+            expm_option : Union[str, tuple] = (),
             parametrize : Union[bool, str, Sequence[str]] = True,
             use_complex : Union[bool, str, Sequence[str]] = False,
             aux_network : Union[None, Sequence[int], dict] = None,
@@ -80,7 +80,8 @@ class Propagator(nn.Module):
             parametrize=_pd["hmf"], 
             init_random=init_random,
             hermite_out=hermite_ops,
-            dtype=_ifcplx(_cd["hmf"]))
+            dtype=_ifcplx(_cd["hmf"]),
+            expm_option=expm_option)
         # make two body operator
         if aux_network is None:
             AuxFieldCls = AuxField
@@ -95,6 +96,7 @@ class Propagator(nn.Module):
             init_random=init_random,
             hermite_out=hermite_ops,
             dtype=_ifcplx(_cd["vhs"]),
+            expm_option=expm_option,
             **network_args)
         # build propagator
         return cls(hmf_op, vhs_op, 
@@ -131,7 +133,8 @@ class Propagator(nn.Module):
             parametrize=_pd["hmf"], 
             init_random=init_random,
             hermite_out=False,
-            dtype=_ifcplx(_cd["hmf"]))
+            dtype=_ifcplx(_cd["hmf"]),
+            expm_option=expm_option)
         # make two body operator
         vhs_op = AuxField(
             init_vhs,
@@ -139,10 +142,10 @@ class Propagator(nn.Module):
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=False,
-            dtype=_t_cplx)
+            dtype=_t_cplx,
+            expm_option=expm_option)
         return cls(hmf_op, vhs_op, 
             init_tsteps=[-1.], 
-            expm_option=expm_option,
             para_tsteps=_pd["tsteps"], 
             cplx_tsteps=_cd["tsteps"], 
             sqrt_tsvpar=False,
@@ -156,10 +159,6 @@ class Propagator(nn.Module):
         return onp.array((nts, nfield))
 
     def setup(self):
-        # handle the expm_apply method
-        _expm_op = self.expm_option
-        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        self.expm_apply = _warp_spin(make_expm_apply(*_expm_op))
         # handle the time steps, for Hmf and Vhs separately
         _t_tsteps = _t_cplx if self.cplx_tsteps else _t_real
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
@@ -200,14 +199,16 @@ class Propagator(nn.Module):
         _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
         # step functions in iterative prop
         def app_h(wfn, ii):
-            hmf = self.hmf_ops[ii](_ts_h[ii])
-            return self.expm_apply(hmf * self.hmask, wfn), 0.
+            hop = self.hmf_ops[ii]
+            hmf = hop(_ts_h[ii])
+            return hop.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
-            twfn = self.vhs_ops[ii].trial_wfn
+            vop = self.vhs_ops[ii]
+            twfn = vop.trial_wfn
             trdm = (calc_rdm(twfn, unpack_spin(wfn, nelec))
                 if self.dyn_mfshift and twfn is not None else None)
-            vhs, lw = self.vhs_ops[ii](_ts_v[ii], fields[ii], trdm=trdm)
-            return self.expm_apply(vhs * self.vmask, wfn), lw
+            vhs, lw = vop(_ts_v[ii], fields[ii], trdm=trdm)
+            return vop.expm_apply(vhs * self.vmask, wfn), lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:
                 return normalize(wfn)
@@ -259,19 +260,3 @@ def normalize(wfn):
     nwfn = wfn / norm
     logd = jnp.log(norm).sum()
     return nwfn, logd
-
-
-def _warp_spin(fun_expm):
-    def new_expm(A, B):
-        if A.shape[-1] == B.shape[-2]:
-            return fun_expm(A, B)
-        elif A.shape[-1]*2 == B.shape[-2]:
-            nao = A.shape[-1]
-            nelec = B.shape[-1]
-            fB = B.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
-            nfB = fun_expm(A, fB)
-            nB = nfB.reshape(nao, 2, nelec).swapaxes(0,1).reshape(2*nao, nelec)
-            return nB
-        else:
-            return fun_expm(A, B)
-    return new_expm

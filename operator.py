@@ -2,11 +2,11 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 from flax import linen as nn
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, symmetrize, Serial, cmult
+from .utils import fix_init, symmetrize, Serial, cmult, make_expm_apply
 from .hamiltonian import _align_rdm, calc_rdm
 
 
@@ -16,7 +16,8 @@ class OneBody(nn.Module):
     init_random : float = 0.
     hermite_out : bool = False
     dtype: Optional[jnp.dtype] = None
-    
+    expm_option : Union[str, tuple] = ()
+
     def setup(self):
         if self.parametrize:
             self.hmf = self.param("hmf", fix_init, 
@@ -28,6 +29,12 @@ class OneBody(nn.Module):
         hmf = symmetrize(self.hmf) if self.hermite_out else self.hmf
         hmf = cmult(step, hmf)
         return hmf
+    
+    @property
+    def expm_apply(self):
+        _expm_op = self.expm_option
+        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
+        return _warp_spin(make_expm_apply(*_expm_op))
 
 
 class AuxField(nn.Module):
@@ -37,6 +44,7 @@ class AuxField(nn.Module):
     init_random : float = 0.
     hermite_out : bool = False
     dtype: Optional[jnp.dtype] = None
+    expm_option : Union[str, tuple] = ()
 
     def setup(self):
         if self.parametrize:
@@ -62,6 +70,12 @@ class AuxField(nn.Module):
         vhs_sum = jnp.tensordot(fields, vhs, axes=1)
         vhs_sum = cmult(step, vhs_sum)
         return vhs_sum, log_weight
+    
+    @property
+    def expm_apply(self):
+        _expm_op = self.expm_option
+        _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
+        return _warp_spin(make_expm_apply(*_expm_op))
 
 
 class AuxFieldNet(AuxField):
@@ -127,3 +141,19 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
         vbar = vbar / (jnp.maximum(jnp.linalg.norm(vbar), cutoff) / cutoff)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar
+
+
+def _warp_spin(fun_expm):
+    def new_expm(A, B):
+        if A.shape[-1] == B.shape[-2]:
+            return fun_expm(A, B)
+        elif A.shape[-1]*2 == B.shape[-2]:
+            nao = A.shape[-1]
+            nelec = B.shape[-1]
+            fB = B.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
+            nfB = fun_expm(A, fB)
+            nB = nfB.reshape(nao, 2, nelec).swapaxes(0,1).reshape(2*nao, nelec)
+            return nB
+        else:
+            return fun_expm(A, B)
+    return new_expm
