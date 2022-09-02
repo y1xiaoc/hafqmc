@@ -10,7 +10,6 @@ from .utils import _t_real, _t_cplx
 from .utils import parse_bool, ensure_mapping
 from .utils import fix_init
 from .utils import pack_spin, unpack_spin, block_spin
-from .utils import make_expm_apply
 from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
 from .hamiltonian import calc_rdm, _make_ghf, _has_spin

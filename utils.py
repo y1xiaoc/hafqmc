@@ -76,7 +76,9 @@ def _chol_qr_jvp(shift, primals, tangents):
     return (q, r), (dq, dr)
 
 
-def make_expm_apply(method="scan", m=6, s=1):
+ExpmFnType = Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]
+
+def make_expm_apply(method="scan", m=6, s=1) -> ExpmFnType:
     # the native python loop, slow compiling
     def expm_apply_loop(A, B):
         # n = A.shape[-1]
@@ -119,7 +121,22 @@ def make_expm_apply(method="scan", m=6, s=1):
         return expm_apply_exact
     raise ValueError(f"unknown expm_apply method type: {method}")
 
-expm_apply = make_expm_apply("scan", 6, 1)
+def warp_spin_expm(fun_expm: ExpmFnType) -> ExpmFnType:
+    def new_expm(A, B):
+        if A.shape[-1] == B.shape[-2]:
+            return fun_expm(A, B)
+        elif A.shape[-1]*2 == B.shape[-2]:
+            nao = A.shape[-1]
+            nelec = B.shape[-1]
+            fB = B.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
+            nfB = fun_expm(A, fB)
+            nB = nfB.reshape(nao, 2, nelec).swapaxes(0,1).reshape(2*nao, nelec)
+            return nB
+        else:
+            return fun_expm(A, B)
+    return new_expm
+
+DEFAULT_EXPM = warp_spin_expm(make_expm_apply("scan", 6, 1))
 
 
 def make_moving_avg(decay=0.99, early_growth=True):

@@ -6,7 +6,8 @@ from typing import Optional, Sequence, Union
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, symmetrize, Serial, cmult, make_expm_apply
+from .utils import fix_init, symmetrize, Serial, cmult
+from .utils import warp_spin_expm, make_expm_apply
 from .hamiltonian import _align_rdm, calc_rdm
 
 
@@ -34,7 +35,7 @@ class OneBody(nn.Module):
     def expm_apply(self):
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        return _warp_spin(make_expm_apply(*_expm_op))
+        return warp_spin_expm(make_expm_apply(*_expm_op))
 
 
 class AuxField(nn.Module):
@@ -45,6 +46,10 @@ class AuxField(nn.Module):
     hermite_out : bool = False
     dtype: Optional[jnp.dtype] = None
     expm_option : Union[str, tuple] = ()
+
+    @property
+    def nfield(self):
+        return self.init_vhs.shape[0]
 
     def setup(self):
         if self.parametrize:
@@ -75,7 +80,7 @@ class AuxField(nn.Module):
     def expm_apply(self):
         _expm_op = self.expm_option
         _expm_op = (_expm_op,) if isinstance(_expm_op, str) else _expm_op
-        return _warp_spin(make_expm_apply(*_expm_op))
+        return warp_spin_expm(make_expm_apply(*_expm_op))
 
 
 class AuxFieldNet(AuxField):
@@ -141,19 +146,3 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
         vbar = vbar / (jnp.maximum(jnp.linalg.norm(vbar), cutoff) / cutoff)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar
-
-
-def _warp_spin(fun_expm):
-    def new_expm(A, B):
-        if A.shape[-1] == B.shape[-2]:
-            return fun_expm(A, B)
-        elif A.shape[-1]*2 == B.shape[-2]:
-            nao = A.shape[-1]
-            nelec = B.shape[-1]
-            fB = B.reshape(2, nao, nelec).swapaxes(0,1).reshape(nao, 2*nelec)
-            nfB = fun_expm(A, fB)
-            nB = nfB.reshape(nao, 2, nelec).swapaxes(0,1).reshape(2*nao, nelec)
-            return nB
-        else:
-            return fun_expm(A, B)
-    return new_expm
