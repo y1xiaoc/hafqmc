@@ -346,3 +346,49 @@ class PAxis:
 
 PMAP_AXIS_NAME = "_pmap_axis"
 paxis = PAxis(PMAP_AXIS_NAME)
+
+
+# currently slower than vanilla convolution
+def fftconvolve(in1, in2, mode='full', axes=None):
+    from scipy.signal._signaltools import _init_freq_conv_axes
+    # define the fft and conv function, use jnp instead of np
+    def _freq_domain_conv(in1, in2, axes, shape):
+        """Convolve `in1` with `in2` in the frequency domain."""
+        if not len(axes):
+            return in1 * in2
+        if (in1.dtype.kind == 'c' or in2.dtype.kind == 'c'):
+            fft, ifft = jnp.fft.fftn, jnp.fft.ifftn
+        else:
+            fft, ifft = jnp.fft.rfftn, jnp.fft.irfftn
+        in1_freq = fft(in1, shape, axes=axes)
+        in2_freq = fft(in2, shape, axes=axes)
+        ret = ifft(in1_freq * in2_freq, shape, axes=axes)
+        return ret
+    # truncate the result, skip the explict copy in scipy
+    def _apply_conv_mode(ret, s1, s2, mode, axes):
+        """Slice result based on the given `mode`."""
+        from scipy.signal._signaltools import _centered
+        if mode == 'full':
+            return ret
+        elif mode == 'same':
+            return _centered(ret, s1)
+        elif mode == 'valid':
+            shape_valid = [ret.shape[a] if a not in axes else s1[a] - s2[a] + 1
+                                        for a in range(ret.ndim)]
+            return _centered(ret, shape_valid)
+        else:
+            raise ValueError("acceptable mode flags are 'valid', 'same', or 'full'")
+    # handle corner cases
+    if in1.ndim != in2.ndim:
+        raise ValueError("in1 and in2 should have the same dimensionality")
+    elif in1.ndim == in2.ndim == 0:
+        return in1 * in2
+    elif in1.size == 0 or in2.size == 0:
+        return jnp.array([], dtype=in1.dtype)
+    # do the real job
+    in1, in2, axes = _init_freq_conv_axes(in1, in2, mode, axes, sorted_axes=False)
+    s1, s2 = in1.shape, in2.shape
+    shape = [max((s1[i], s2[i])) if i not in axes else s1[i] + s2[i] - 1
+                     for i in range(in1.ndim)]
+    ret = _freq_domain_conv(in1, in2, axes, shape)
+    return _apply_conv_mode(ret, s1, s2, mode, axes)
