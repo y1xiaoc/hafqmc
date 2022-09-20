@@ -3,6 +3,7 @@ import numpy as onp
 from jax import numpy as jnp
 from jax import scipy as jsp
 
+from .utils import tree_map
 from .molecule import integrals_from_scf, initwfn_from_scf
 from .molecule import initwfn_from_ghf, get_orth_ao, solve_ghf
 
@@ -248,7 +249,6 @@ def calc_ejk_opt_g(ceri, bra, theta):
     return ej, ek
 
 
-@jax.tree_util.register_pytree_node_class
 class Hamiltonian:
 
     def __init__(self, h1e, ceri, enuc, wfn0, aux=None, *, full_eri=False):
@@ -256,8 +256,9 @@ class Hamiltonian:
         self.ceri = jnp.asarray(ceri)
         self._eri = jnp.einsum("kpr,kqs->prqs", ceri, ceri) if full_eri else None
         self.enuc = enuc
-        self.wfn0 = wfn0
+        self.wfn0 = tree_map(jnp.asarray, wfn0)
         self.aux = aux if aux is not None else {}
+        self.nbasis = self.h1e.shape[-1]
 
     def calc_e1b(self, rdm):
         return calc_e1b(self.h1e, rdm)
@@ -349,15 +350,187 @@ class Hamiltonian:
             use_mcd=True, chol_cut=chol_cut, orth_ao=orth_mat)
         wfn0 = initwfn_from_scf(mf, orth_mat)
         return cls(*ints, wfn0, aux, full_eri=full_eri)
+
+
+# below are methods for plane wave UEG calculations
+from .utils import symrange, rawcorr
+
+
+def make_pw_basis(ecut, nmax=None):
+    if nmax is None:
+        nmax = int((onp.sqrt((2*ecut))))
+    lingrid = symrange(nmax, onp.int32)
+    kmesh = onp.meshgrid(lingrid, lingrid, lingrid, copy=False, indexing='ij')
+    kall = jnp.stack(kmesh, axis=-1)
+    # here ecut is in the kmesh unit
+    k2 = 0.5 * (kall**2).sum(-1)
+    kmask = k2 <= ecut
+    return kall[kmask], kmask
+
+
+def make_ke(kvec):
+    return 0.5 * (kvec**2).sum(-1)
+
+
+def make_vq(qvec):
+    q2 = (qvec**2).sum(-1)
+    return jnp.where(q2 > 1e-10, 4*jnp.pi / q2, 0.)
+
+
+def make_pw_rhf(ke, nelec):
+    if not isinstance(nelec, int):
+        return tuple(make_pw_rhf(ke, ne) for ne in nelec)
+    nbas = ke.shape[0]
+    sort_idx = jnp.argsort(ke)
+    eye = jnp.eye(nbas)
+    return eye[:, sort_idx[:nelec]]
+
+
+def mod_h1e(vol, kvec):
+    vfac = 1. / (2 * vol)
+    qmat = kvec - kvec[:, None]
+    return - vfac * make_vq(qmat).sum(-1)
+
+
+def calc_madelung(rs, nelec):
+    """Use expression in Schoof et al. (PhysRevLett.115.130402) for the
+    Madelung contribution to the total energy fitted to L.M. Fraser et al.
+    Phys. Rev. B 53, 1814.
+    Parameters
+    ----------
+    rs : float
+        Wigner-Seitz radius.
+    ne : int
+        Number of electrons.
+    Returns
+    -------
+    v_M: float
+        Madelung potential (in Hartrees).
+    """
+    c1 = -2.837297
+    c2 = (3/(4*onp.pi))**(1/3)
+    return c1 * c2 / (nelec**(1/3) * rs)
+
+
+def calc_e1b_pw(ke, bra, theta):
+    ekin = 0.
+    for s in (0, 1):
+        ekin += jnp.einsum('k,ki,ki', ke, bra[s].conj(), theta[s])
+    return ekin
+
+
+def calc_e2b_pw(vq, bra, theta, kmask, qmask):
+    # can be viewed as matmul in basis axis
+    def corr1ele(bi, tj):
+        # assume bra is already conjugated
+        bi_mesh = jnp.zeros_like(kmask, dtype=bi.dtype).at[kmask].set(bi)
+        tj_mesh = jnp.zeros_like(kmask, dtype=tj.dtype).at[kmask].set(tj)
+        # G_q = \sum_k bra_k * theta_{k-q}
+        gq_mesh = rawcorr(bi_mesh, tj_mesh, 'full')
+        gq = gq_mesh[qmask]
+        return gq
+    # like calculating `c` and `f` in LCAO cases 
+    gq_trace = gq_exchange = 0.
+    for s in (0, 1):
+        gq_half = jax.vmap(jax.vmap(corr1ele, (1, None), -1), (None, 1), -1)(bra[s].conj(), theta[s])
+        gq_trace += gq_half.trace(0, -1, -2)
+        gq_exchange += jnp.einsum('qij,qji->q', gq_half, jnp.flip(gq_half, axis=0))
+    gq_coulomb = gq_trace * jnp.flip(gq_trace)
+    # follow arxiv:1905.04361 eq (23)
+    return jnp.einsum('q,q', vq, gq_coulomb-gq_exchange)
+
+
+class HamiltonianUEG:
+
+    def __init__(self, nelec, rs, ecut, wfn0=None):
+        self.nelec = nelec
+        self.rs = rs
+        self.ecut = ecut
+        nup, ndown = nelec # only support uhf for now
+        ne = nup + ndown
+        # basis constants
+        self.emdl = 0.5 * ne * calc_madelung(rs, ne) # madelung energy from pauxy
+        self.rho = 1 / (4/3*onp.pi * self.rs**3.0) # Density
+        box_size = self.rs * (4/3*onp.pi * ne)**(1/3.) 
+        self.vol = box_size**3.0 # Volume
+        self.kfac = 2*onp.pi / box_size # k-space grid spacing
+        # k space grid vectors and masks
+        self.kvec, self.kmask = make_pw_basis(ecut)
+        self.qvec, self.qmask = make_pw_basis(ecut * 4)
+        self.nbasis = self.kvec.shape[0]
+        # kinetic and potential term for each k or q
+        self.ke = make_ke(self.kfac * self.kvec)
+        self.vq = make_vq(self.kfac * self.qvec)
+        # initialize trial wave function
+        if wfn0 is None: # use RHF for free electrons as trial
+            wfn0 = make_pw_rhf(self.ke, self.nelec)
+        self.wfn0 = tree_map(jnp.asarray, wfn0)
+
+    calc_ovlp = staticmethod(calc_ovlp)
+    calc_slov = staticmethod(calc_slov)
+    calc_rdm  = staticmethod(calc_rdm)
+
+    def calc_e1b(self, bra, theta):
+        return calc_e1b_pw(self.ke, bra, theta)
     
-    def tree_flatten(self):
-        fields = ("h1e", "ceri", "enuc", "_eri", "wfn0", "aux")
-        children = tuple(getattr(self, f) for f in fields)
-        return (children, fields)
+    def calc_e2b(self, bra, theta):
+        return calc_e2b_pw(self.vq, bra, theta, self.kmask, self.qmask) / (2*self.vol)
     
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        for name, data in zip(aux_data, children):
-            setattr(obj, name, data)
-        return obj
+    def local_energy(self, bra=None, ket=None, optimize=True):
+        """the normalized energy from two slater determinants"""
+        assert optimize, 'UEG hamiltonian must use PW optimization'
+        bra = bra if bra is not None else self.wfn0
+        ket = ket if ket is not None else self.wfn0
+        bra, ket = _align_wfn(bra, ket)
+        theta = calc_theta(bra, ket)
+        return self.calc_e1b(bra, theta) + self.calc_e2b(bra, theta)
+
+
+def solve_hartree_fock(hamiltonian, init_wfn, 
+                       use_complex=False, opt_method="adabelief", start_lr=1e-2,
+                       conv_tol=1e-8, max_iter=1000, ortho_intvl=10, verbose=True):
+    import optax, time
+    from .propagator import orthonormalize
+    from .train import make_optimizer, make_lr_schedule, ensure_mapping
+
+    energy_fn = lambda wfn: hamiltonian.local_energy(wfn, wfn).real
+    ene_and_grad = jax.value_and_grad(energy_fn)
+    lr_schedule = make_lr_schedule(start_lr, delay=max_iter//5)
+    optimizer = make_optimizer(lr_schedule=lr_schedule, **ensure_mapping(opt_method, 'name'))
+    ensure_ortho = jax.jit(lambda wfn: orthonormalize(wfn)[0])
+
+    @jax.jit
+    def iter_step(wfn, opt_state):
+        energy, grads = ene_and_grad(wfn)
+        grads = tree_map(jnp.conj, grads) # for complex parameters
+        updates, opt_state = optimizer.update(grads, opt_state, wfn)
+        wfn = optax.apply_updates(wfn, updates)
+        return energy, grads, wfn, opt_state
+
+    wfn = tree_map(jnp.asarray, init_wfn)
+    if use_complex:
+        wfn = tree_map(lambda x: x+0j, wfn)
+    opt_state = optimizer.init(wfn)
+    prev_ene = 0
+
+    for ii in range(max_iter):
+        tick = time.perf_counter()
+        lr = lr_schedule(ii)
+        curr_ene, grads, wfn, opt_state = iter_step(wfn, opt_state)
+        if ii > 0 and ii % ortho_intvl == 0:
+            wfn = ensure_ortho(wfn)
+        delta = (curr_ene - prev_ene)
+        tock = time.perf_counter()
+        if verbose and ii % int(onp.ceil(1/verbose)) == 0:
+            max_grad = abs(onp.max(tree_map(jnp.max, grads)))
+            print(f"iter: {ii}, prev: {prev_ene:.4e}, curr: {curr_ene:.4e}, diff: {delta:.4e}, max_grad: {max_grad:.4e}, time: {tock-tick:.3f}")
+        if abs(delta) < conv_tol * lr:
+            if verbose:
+                print(f'converged at iteration {ii}')
+            break
+        prev_ene = curr_ene
+    
+    return curr_ene, ensure_ortho(wfn)
+
+
+    

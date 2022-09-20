@@ -46,6 +46,10 @@ def cmult(x1, x2):
         + 1j * (x1.imag * x2.real + x1.real * x2.imag))
 
 
+def symrange(nmax, dtype=None):
+    return jnp.arange(-nmax, nmax+1, dtype=dtype)
+
+
 @partial(jax.custom_jvp, nondiff_argnums=(1,))
 def chol_qr(x, shift=None):
     *_, m, n = x.shape
@@ -351,7 +355,7 @@ paxis = PAxis(PMAP_AXIS_NAME)
 # currently slower than vanilla convolution
 def fftconvolve(in1, in2, mode='full', axes=None):
     from scipy.signal._signaltools import _init_freq_conv_axes
-    # define the fft and conv function, use jnp instead of np
+
     def _freq_domain_conv(in1, in2, axes, shape):
         """Convolve `in1` with `in2` in the frequency domain."""
         if not len(axes):
@@ -364,7 +368,7 @@ def fftconvolve(in1, in2, mode='full', axes=None):
         in2_freq = fft(in2, shape, axes=axes)
         ret = ifft(in1_freq * in2_freq, shape, axes=axes)
         return ret
-    # truncate the result, skip the explict copy in scipy
+
     def _apply_conv_mode(ret, s1, s2, mode, axes):
         """Slice result based on the given `mode`."""
         from scipy.signal._signaltools import _centered
@@ -378,17 +382,55 @@ def fftconvolve(in1, in2, mode='full', axes=None):
             return _centered(ret, shape_valid)
         else:
             raise ValueError("acceptable mode flags are 'valid', 'same', or 'full'")
-    # handle corner cases
+
     if in1.ndim != in2.ndim:
         raise ValueError("in1 and in2 should have the same dimensionality")
     elif in1.ndim == in2.ndim == 0:
         return in1 * in2
     elif in1.size == 0 or in2.size == 0:
         return jnp.array([], dtype=in1.dtype)
-    # do the real job
+
     in1, in2, axes = _init_freq_conv_axes(in1, in2, mode, axes, sorted_axes=False)
     s1, s2 = in1.shape, in2.shape
     shape = [max((s1[i], s2[i])) if i not in axes else s1[i] + s2[i] - 1
                      for i in range(in1.ndim)]
     ret = _freq_domain_conv(in1, in2, axes, shape)
     return _apply_conv_mode(ret, s1, s2, mode, axes)
+
+
+#copy from jax.scipy.signal._convolve_nd
+def rawcorr(in1, in2, mode='full', *, precision=None):
+    """same as scipy.signal.correlate but do not do conjugate."""
+    from jax._src.numpy.util import _promote_dtypes_inexact
+    if mode not in ["full", "same", "valid"]:
+        raise ValueError("mode must be one of ['full', 'same', 'valid']")
+    if in1.ndim != in2.ndim:
+        raise ValueError("in1 and in2 must have the same number of dimensions")
+    if in1.size == 0 or in2.size == 0:
+        raise ValueError(f"zero-size arrays not supported in convolutions, got shapes {in1.shape} and {in2.shape}.")
+    in1, in2 = _promote_dtypes_inexact(in1, in2)
+
+    no_swap = all(s1 >= s2 for s1, s2 in zip(in1.shape, in2.shape))
+    swap = all(s1 <= s2 for s1, s2 in zip(in1.shape, in2.shape))
+    if not (no_swap or swap):
+        raise ValueError("One input must be smaller than the other in every dimension.")
+
+    shape_o = in2.shape
+    if swap:
+        in1, in2 = in2, in1
+    shape = in2.shape
+    # do not flip in2 here
+    # in2 = jnp.flip(in2)
+
+    if mode == 'valid':
+        padding = [(0, 0) for s in shape]
+    elif mode == 'same':
+        padding = [(s - 1 - (s_o - 1) // 2, s - s_o + (s_o - 1) // 2)
+                             for (s, s_o) in zip(shape, shape_o)]
+    elif mode == 'full':
+        padding = [(s - 1, s - 1) for s in shape]
+
+    strides = tuple(1 for s in shape)
+    result = lax.conv_general_dilated(in1[None, None], in2[None, None], strides,
+                                                                        padding, precision=precision)
+    return result[0, 0]

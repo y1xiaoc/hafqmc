@@ -9,7 +9,7 @@ from tensorboardX import SummaryWriter
 from typing import NamedTuple
 
 from .molecule import build_mf
-from .hamiltonian import Hamiltonian
+from .hamiltonian import Hamiltonian, HamiltonianUEG
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
@@ -129,7 +129,10 @@ def train(cfg: ConfigDict):
         eval_batch = sample_batch
 
     # set up the hamiltonian
-    if cfg.restart.hamiltonian is None:
+    if "ecut" in cfg.hamiltonian:
+        logger.info("Using uniform electron gas Hamiltonian")
+        hamiltonian = HamiltonianUEG(**cfg.hamiltonian)
+    elif cfg.restart.hamiltonian is None:
         logger.info("Building molecule and doing HF calculation to get Hamiltonian")
         mf = build_mf(**cfg.molecule)
         print(f"# HF energy from pyscf calculation: {mf.e_tot}")
