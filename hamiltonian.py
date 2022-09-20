@@ -440,31 +440,17 @@ def calc_e2b_pw(vq, bra, theta, kmask, qmask):
     return jnp.einsum('q,q', vq, gq_coulomb-gq_exchange)
 
 
-class HamiltonianUEG:
+class HamiltonianPW:
 
-    def __init__(self, nelec, rs, ecut, wfn0=None):
-        self.nelec = nelec
-        self.rs = rs
-        self.ecut = ecut
-        nup, ndown = nelec # only support uhf for now
-        ne = nup + ndown
-        # basis constants
-        self.emdl = 0.5 * ne * calc_madelung(rs, ne) # madelung energy from pauxy
-        self.rho = 1 / (4/3*onp.pi * self.rs**3.0) # Density
-        box_size = self.rs * (4/3*onp.pi * ne)**(1/3.) 
-        self.vol = box_size**3.0 # Volume
-        self.kfac = 2*onp.pi / box_size # k-space grid spacing
-        # k space grid vectors and masks
-        self.kvec, self.kmask = make_pw_basis(ecut)
-        self.qvec, self.qmask = make_pw_basis(ecut * 4)
-        self.nbasis = self.kvec.shape[0]
-        # kinetic and potential term for each k or q
-        self.ke = make_ke(self.kfac * self.kvec)
-        self.vq = make_vq(self.kfac * self.qvec)
-        # initialize trial wave function
-        if wfn0 is None: # use RHF for free electrons as trial
-            wfn0 = make_pw_rhf(self.ke, self.nelec)
+    def __init__(self, ke, vq, kmask, qmask, ecore, wfn0, aux=None):
+        self.ke = jnp.asarray(ke)
+        self.vq = jnp.asarray(vq)
+        self.kmask = jnp.asarray(kmask)
+        self.qmask = jnp.asarray(qmask)
+        self.ecore = ecore
         self.wfn0 = tree_map(jnp.asarray, wfn0)
+        self.aux = aux
+        self.nbasis = self.ke.shape[-1]
 
     calc_ovlp = staticmethod(calc_ovlp)
     calc_slov = staticmethod(calc_slov)
@@ -474,7 +460,7 @@ class HamiltonianUEG:
         return calc_e1b_pw(self.ke, bra, theta)
     
     def calc_e2b(self, bra, theta):
-        return calc_e2b_pw(self.vq, bra, theta, self.kmask, self.qmask) / (2*self.vol)
+        return calc_e2b_pw(self.vq, bra, theta, self.kmask, self.qmask)
     
     def local_energy(self, bra=None, ket=None, optimize=True):
         """the normalized energy from two slater determinants"""
@@ -483,12 +469,44 @@ class HamiltonianUEG:
         ket = ket if ket is not None else self.wfn0
         bra, ket = _align_wfn(bra, ket)
         theta = calc_theta(bra, ket)
-        return self.calc_e1b(bra, theta) + self.calc_e2b(bra, theta)
+        return self.calc_e1b(bra, theta) + self.calc_e2b(bra, theta) + self.ecore
+
+    def to_tuple(self):
+        return (self.ke, self.vq, self.kmask, self.qmask, self.ecore, self.wfn0, self.aux)
+
+    @classmethod
+    def from_ueg(cls, nelec, rs, ecut, with_uhf=False):
+        nup, ndown = nelec # only support uhf for now
+        ne = nup + ndown
+        # basis constants
+        emdl = 0.5 * ne * calc_madelung(rs, ne) # madelung energy from pauxy
+        rho = 1 / (4/3*onp.pi * rs**3.0) # Density
+        box_size = rs * (4/3*onp.pi * ne)**(1/3.) 
+        vol = box_size**3.0 # Volume
+        kfac = 2*onp.pi / box_size # k-space grid spacing
+        # k space grid vectors and masks
+        kvec, kmask = make_pw_basis(ecut)
+        qvec, qmask = make_pw_basis(ecut * 4)
+        # kinetic and potential term for each k or q
+        ke = make_ke(kfac * kvec)
+        vq = make_vq(kfac * qvec) / (2 * vol)
+        wfn0 = make_pw_rhf(ke, nelec)
+        hamiltonian = cls(ke=ke, vq=vq, kmask=kmask, qmask=qmask, 
+                          ecore=0., wfn0=wfn0, aux={"emdl": emdl})
+        if with_uhf:
+            rkey = jax.random.PRNGKey(0) # hardcoded key since this is not important
+            key0, key1 = jax.random.split(rkey)
+            init_wfn = (wfn0[0] + 1e-3*(jax.random.uniform(key0)-0.5),
+                        wfn0[1] + 1e-3*(jax.random.uniform(key1)-0.5))
+            nene, nwfn, conv = solve_UHF(hamiltonian, init_wfn, verbose=False)
+            hamiltonian.wfn0 = nwfn
+        return hamiltonian
 
 
-def solve_hartree_fock(hamiltonian, init_wfn, 
-                       use_complex=False, opt_method="adabelief", start_lr=1e-2,
-                       conv_tol=1e-8, max_iter=1000, ortho_intvl=10, verbose=True):
+def solve_UHF(hamiltonian, init_wfn, 
+              opt_method="adabelief", start_lr=1e-2,
+              conv_tol=1e-8, max_iter=1000, 
+              ortho_intvl=10, verbose=True):
     import optax, time
     from .propagator import orthonormalize
     from .train import make_optimizer, make_lr_schedule, ensure_mapping
@@ -508,11 +526,10 @@ def solve_hartree_fock(hamiltonian, init_wfn,
         return energy, grads, wfn, opt_state
 
     wfn = tree_map(jnp.asarray, init_wfn)
-    if use_complex:
-        wfn = tree_map(lambda x: x+0j, wfn)
     opt_state = optimizer.init(wfn)
     prev_ene = 0
 
+    converged = False
     for ii in range(max_iter):
         tick = time.perf_counter()
         lr = lr_schedule(ii)
@@ -525,12 +542,11 @@ def solve_hartree_fock(hamiltonian, init_wfn,
             max_grad = abs(onp.max(tree_map(jnp.max, grads)))
             print(f"iter: {ii}, prev: {prev_ene:.4e}, curr: {curr_ene:.4e}, diff: {delta:.4e}, max_grad: {max_grad:.4e}, time: {tock-tick:.3f}")
         if abs(delta) < conv_tol * lr:
+            converged = True
             if verbose:
                 print(f'converged at iteration {ii}')
             break
         prev_ene = curr_ene
     
-    return curr_ene, ensure_ortho(wfn)
+    return curr_ene, ensure_ortho(wfn), converged
 
-
-    

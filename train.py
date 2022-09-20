@@ -9,7 +9,7 @@ from tensorboardX import SummaryWriter
 from typing import NamedTuple
 
 from .molecule import build_mf
-from .hamiltonian import Hamiltonian, HamiltonianUEG
+from .hamiltonian import Hamiltonian, HamiltonianPW
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
@@ -129,21 +129,24 @@ def train(cfg: ConfigDict):
         eval_batch = sample_batch
 
     # set up the hamiltonian
-    if "ecut" in cfg.hamiltonian:
-        logger.info("Using uniform electron gas Hamiltonian")
-        hamiltonian = HamiltonianUEG(**cfg.hamiltonian)
-    elif cfg.restart.hamiltonian is None:
-        logger.info("Building molecule and doing HF calculation to get Hamiltonian")
-        mf = build_mf(**cfg.molecule)
-        print(f"# HF energy from pyscf calculation: {mf.e_tot}")
-        if not mf.converged:
-            logger.warning("HF calculation does not converge!")
-        hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
+    if cfg.restart.hamiltonian is None:
+        if "ueg" not in cfg:
+            logger.info("Building molecule and doing HF calculation to get Hamiltonian")
+            mf = build_mf(**cfg.molecule)
+            print(f"# HF energy from pyscf calculation: {mf.e_tot}")
+            if not mf.converged:
+                logger.warning("HF calculation does not converge!")
+            hamiltonian = Hamiltonian.from_pyscf(mf, **cfg.hamiltonian)
+        else:
+            logger.info("Using uniform electron gas Hamiltonian")
+            hamiltonian = HamiltonianPW.from_ueg(**cfg.ueg)
+            print(f"# HF energy for UEG hamiltonian: {hamiltonian.local_energy()}")
         save_pickle(cfg.log.hamil_path, hamiltonian.to_tuple())
     else:
         logger.info("Loading Hamiltonian from saved file")
         hamil_data = load_pickle(cfg.restart.hamiltonian)
-        hamiltonian = Hamiltonian(*hamil_data, full_eri=cfg.hamiltonian.full_eri)
+        HamCls = Hamiltonian if len(hamil_data) <= 5 else HamiltonianPW
+        hamiltonian = HamCls(*hamil_data)
         print(f"# HF energy from loaded: {hamiltonian.local_energy()}")
 
     # set up all other classes and functions
