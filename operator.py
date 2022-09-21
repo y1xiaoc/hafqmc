@@ -12,12 +12,12 @@ from .hamiltonian import _align_rdm, calc_rdm
 
 
 class OneBody(nn.Module):
-    init_hmf : jnp.ndarray
-    parametrize : bool = False
-    init_random : float = 0.
-    hermite_out : bool = False
+    init_hmf: jnp.ndarray
+    parametrize: bool = False
+    init_random: float = 0.
+    hermite_out: bool = False
     dtype: Optional[jnp.dtype] = None
-    expm_option : Union[str, tuple] = ()
+    expm_option: Union[str, tuple] = ()
 
     def setup(self):
         if self.parametrize:
@@ -39,13 +39,13 @@ class OneBody(nn.Module):
 
 
 class AuxField(nn.Module):
-    init_vhs : jnp.ndarray
-    trial_wfn : Optional[jnp.ndarray] = None
-    parametrize : bool = False
-    init_random : float = 0.
-    hermite_out : bool = False
+    init_vhs: jnp.ndarray
+    trial_wfn: Optional[jnp.ndarray] = None
+    parametrize: bool = False
+    init_random: float = 0.
+    hermite_out: bool = False
     dtype: Optional[jnp.dtype] = None
-    expm_option : Union[str, tuple] = ()
+    expm_option: Union[str, tuple] = ()
 
     @property
     def nfield(self):
@@ -84,9 +84,9 @@ class AuxField(nn.Module):
 
 
 class AuxFieldNet(AuxField):
-    hidden_sizes : Optional[Sequence[int]] = None
-    actv_fun : str = "gelu"
-    zero_init : bool = True
+    hidden_sizes: Optional[Sequence[int]] = None
+    actv_fun: str = "gelu"
+    zero_init: bool = True
     mod_density: bool = False
 
     def setup(self):

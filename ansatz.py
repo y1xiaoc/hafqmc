@@ -70,8 +70,8 @@ class Ansatz(nn.Module):
 
 
 class BraKet(nn.Module):
-    ansatz : Ansatz
-    trial : Optional[Ansatz] = None
+    ansatz: Ansatz
+    trial: Optional[Ansatz] = None
 
     @nn.nowrap
     def fields_shape(self, max_prop=None):

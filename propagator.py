@@ -16,23 +16,16 @@ from .hamiltonian import calc_rdm, _make_ghf, _has_spin
 
 
 class Propagator(nn.Module):
-    hmf_op : nn.Module
-    vhs_op : nn.Module
-    init_tsteps : Sequence[float]
-    ortho_intvl : int = 0
-    timevarying : Union[bool, str, Sequence[str]] = False
-    para_tsteps : bool = False
-    cplx_tsteps : bool = False
-    sqrt_tsvpar : bool = False
-    dyn_mfshift : bool = False
-    priori_mask : Optional[ndarray] = None
-    # TODO: below are parameters to be moved to create function
-    mfshift_wfn : Optional[Tuple[ndarray, ndarray]] = None
-    parametrize : Union[bool, str, Sequence[str]] = True
-    use_complex : Union[bool, str, Sequence[str]] = False
-    aux_network : Union[None, Sequence[int], dict] = None
-    init_random : float = 0.
-    hermite_ops : bool = False
+    hmf_op: nn.Module
+    vhs_op: nn.Module
+    init_tsteps: Sequence[float]
+    ortho_intvl: int = 0
+    timevarying: Union[bool, str, Sequence[str]] = False
+    para_tsteps: bool = False
+    cplx_tsteps: bool = False
+    sqrt_tsvpar: bool = False
+    dyn_mfshift: bool = False
+    priori_mask: Optional[ndarray] = None
 
     @nn.nowrap
     @classmethod
@@ -47,15 +40,15 @@ class Propagator(nn.Module):
     def create_normal(cls, 
             hamiltonian, 
             init_tsteps, *, 
-            max_nhs : Optional[int] = None,
-            expm_option : Union[str, tuple] = (),
-            parametrize : Union[bool, str, Sequence[str]] = True,
-            use_complex : Union[bool, str, Sequence[str]] = False,
-            aux_network : Union[None, Sequence[int], dict] = None,
-            init_random : float = 0.,
-            hermite_ops : bool = False,
-            mf_subtract : bool = False, 
-            spin_mixing : Union[bool, float, complex] = False, 
+            max_nhs: Optional[int] = None,
+            expm_option: Union[str, tuple] = (),
+            parametrize: Union[bool, str, Sequence[str]] = True,
+            use_complex: Union[bool, str, Sequence[str]] = False,
+            aux_network: Union[None, Sequence[int], dict] = None,
+            init_random: float = 0.,
+            hermite_ops: bool = False,
+            mf_subtract: bool = False, 
+            spin_mixing: Union[bool, float, complex] = False, 
             **init_kwargs):
         # prepare data
         twfn = hamiltonian.wfn0
@@ -108,12 +101,12 @@ class Propagator(nn.Module):
     @classmethod
     def create_ccsd(cls, 
             hamiltonian, *, 
-            with_mask : bool =True, 
-            expm_option : Union[str, tuple] = (),
-            parametrize : Union[bool, str, Sequence[str]] = True,
-            use_complex : Union[bool, str, Sequence[str]] = False,
-            init_random : float = 0.,
-            mf_subtract : bool = False, 
+            with_mask: bool =True, 
+            expm_option: Union[str, tuple] = (),
+            parametrize: Union[bool, str, Sequence[str]] = True,
+            use_complex: Union[bool, str, Sequence[str]] = False,
+            init_random: float = 0.,
+            mf_subtract: bool = False, 
             **init_kwargs):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
@@ -163,7 +156,7 @@ class Propagator(nn.Module):
         _ts_v = jnp.asarray(self.init_tsteps).reshape(-1)
         _ts_h = jnp.convolve(_ts_v, jnp.array([0.5,0.5]), "full")
         if self.sqrt_tsvpar:
-            _ts_v = jnp.sqrt(_ts_v if self.use_complex else jnp.abs(_ts_v))
+            _ts_v = jnp.sqrt(_ts_v if self.cplx_tsteps else jnp.abs(_ts_v))
         self.ts_v = (self.param("ts_v", fix_init, _ts_v, _t_tsteps) 
                      if self.para_tsteps else _ts_v)
         self.ts_h = (self.param("ts_h", fix_init, _ts_h, _t_tsteps) 
