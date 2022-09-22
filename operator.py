@@ -61,13 +61,15 @@ class AuxField(nn.Module):
         self.trial_rdm = (calc_rdm(self.trial_wfn, self.trial_wfn) 
             if self.trial_wfn is not None else None)
 
-    def __call__(self, step, fields, trdm=None):
+    def __call__(self, step, fields, curr_wfn=None):
         vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields ** 2).sum()
         if self.trial_rdm is not None:
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
             fields += step * vbar0
-        if trdm is not None:
+        # this dynamic shift is buggy, keep it here for reference
+        if curr_wfn is not None and self.trial_wfn is not None:
+            trdm = calc_rdm(self.trial_wfn, curr_wfn)
             _, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
             log_weight += - fields @ fshift - 0.5 * (fshift ** 2).sum()
@@ -110,7 +112,7 @@ class AuxFieldNet(AuxField):
         else:
             self.network = None
         
-    def __call__(self, step, fields, trdm=None):
+    def __call__(self, step, fields, curr_wfn=None):
         vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
         log_weight = - 0.5 * (fields ** 2).sum()
         tmp = fields
@@ -123,7 +125,9 @@ class AuxFieldNet(AuxField):
         if self.trial_rdm is not None:
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
             nfields += step * vbar0
-        if trdm is not None:
+        # this dynamic shift is buggy
+        if curr_wfn is not None and self.trial_wfn is not None:
+            trdm = calc_rdm(self.trial_wfn, curr_wfn)
             _, vbar = meanfield_subtract(vhs, lax.stop_gradient(trdm), 0.1)
             fshift = step * vbar
             log_weight += - nfields @ fshift - 0.5 * (fshift ** 2).sum()
@@ -146,3 +150,4 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
         vbar = vbar / (jnp.maximum(jnp.linalg.norm(vbar), cutoff) / cutoff)
     vhs = vhs - vbar.reshape(-1,1,1) * jnp.eye(vhs.shape[-1]) / nelec
     return vhs, vbar
+

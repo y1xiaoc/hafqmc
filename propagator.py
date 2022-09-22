@@ -196,10 +196,8 @@ class Propagator(nn.Module):
             return hop.expm_apply(hmf * self.hmask, wfn), 0.
         def app_v(wfn, ii):
             vop = self.vhs_ops[ii]
-            twfn = vop.trial_wfn
-            trdm = (calc_rdm(twfn, unpack_spin(wfn, nelec))
-                if self.dyn_mfshift and twfn is not None else None)
-            vhs, lw = vop(_ts_v[ii], fields[ii], trdm=trdm)
+            cwfn = unpack_spin(wfn, nelec) if self.dyn_mfshift else None
+            vhs, lw = vop(_ts_v[ii], fields[ii], curr_wfn=cwfn)
             return vop.expm_apply(vhs * self.vmask, wfn), lw
         def nmlz(wfn, ii):
             if self.ortho_intvl == 0:

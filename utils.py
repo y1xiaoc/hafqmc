@@ -82,7 +82,9 @@ def _chol_qr_jvp(shift, primals, tangents):
 
 ExpmFnType = Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]
 
-def make_expm_apply(method="scan", m=6, s=1) -> ExpmFnType:
+def make_expm_apply(method="scan", m=6, s=1, matmul_fn=None) -> ExpmFnType:
+    # customize matrix multiplication
+    matmul = jnp.matmul if matmul_fn is None else matmul_fn
     # the native python loop, slow compiling
     def expm_apply_loop(A, B):
         # n = A.shape[-1]
@@ -92,7 +94,7 @@ def make_expm_apply(method="scan", m=6, s=1) -> ExpmFnType:
         F = B
         for _ in range(s):
             for n in range(1, m + 1):
-                B = A @ B / (s * n)
+                B = matmul(A, B) / (s * n)
                 F = F + B
             B = F
         return F # * eta
@@ -105,7 +107,7 @@ def make_expm_apply(method="scan", m=6, s=1) -> ExpmFnType:
         ns = jnp.arange(1., m+1., dtype=A.dtype)
         def _loop_m(B_and_F, n):
             B, F = B_and_F
-            B = A @ B / (s * n)
+            B = matmul(A, B) / (s * n)
             return (B, F + B), None
         def _loop_s(B, _):
             (_, B), _ = lax.scan(_loop_m, (B, B), ns)
@@ -122,6 +124,7 @@ def make_expm_apply(method="scan", m=6, s=1) -> ExpmFnType:
     if method == "scan":
         return expm_apply_scan
     if method == "exact":
+        assert matmul_fn is None, 'do not support custom matmul for exact expm'
         return expm_apply_exact
     raise ValueError(f"unknown expm_apply method type: {method}")
 
