@@ -419,7 +419,7 @@ def rawcorr(in1, in2, mode='full', *, precision=None):
         raise ValueError("One input must be smaller than the other in every dimension.")
 
     shape_o = in2.shape
-    if swap:
+    if not no_swap: # do not swap for same size
         in1, in2 = in2, in1
     shape = in2.shape
     # do not flip in2 here

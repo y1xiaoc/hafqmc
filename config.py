@@ -10,15 +10,15 @@ def default_prop(with_net=False) -> ConfigDict:
         }
     return ConfigDict({
         "max_nhs": None,
-        "init_tsteps": [0.01]*5,
+        "init_tsteps": [0.01]*3,
         "ortho_intvl": 0,
         "expm_option": ["scan", 6, 1],
         "parametrize": "all",
         "timevarying": "hmf",
         "aux_network": net_dict if with_net else None,
         "init_random": 0.,
+        "sqrt_tsvpar": True,
         "use_complex": False,
-        "sqrt_tsvpar": False,
         "hermite_ops": False,
         "mf_subtract": False,
         "dyn_mfshift": False,
@@ -41,6 +41,20 @@ def ccsd_prop() -> ConfigDict:
         "mf_subtract": False,
         "dyn_mfshift": False,
     }, 
+    type_safe=False, convert_dict=True)
+
+
+def ueg_prop() -> ConfigDict:
+    return ConfigDict({
+        "init_tsteps": [0.01]*3,
+        "ortho_intvl": 0,
+        "expm_option": ["scan", 6, 1],
+        "parametrize": True,
+        "timevarying": True,
+        "init_random": 0.,
+        "sqrt_tsvpar": True,
+        "use_complex": False,
+    },
     type_safe=False, convert_dict=True)
 
 
@@ -130,7 +144,7 @@ def example() -> ConfigDict:
     cfg.optim.lr.decay = 1.
     cfg.optim.baseline = {"decay": 0.99}
     # use mala sampler
-    cfg.sample.sampler = {"name": "langevin", "tau": 0.03, "steps": 10}
+    cfg.sample.sampler = {"name": "hmc", "dt": 0.1, "length": 1.}
     cfg.sample.burn_in = 100
     # add sign penalty to prevent it go below 0.7
     cfg.loss.sign_factor = 1

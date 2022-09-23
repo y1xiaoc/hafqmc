@@ -12,7 +12,8 @@ from .utils import fix_init
 from .utils import pack_spin, unpack_spin, block_spin
 from .utils import chol_qr
 from .operator import OneBody, AuxField, AuxFieldNet
-from .hamiltonian import calc_rdm, _make_ghf, _has_spin
+from .operator import OneBodyPW, AuxFieldPW
+from .hamiltonian import _make_ghf, _has_spin, Hamiltonian, HamiltonianPW
 
 
 class Propagator(nn.Module):
@@ -30,7 +31,9 @@ class Propagator(nn.Module):
     @nn.nowrap
     @classmethod
     def create(cls, hamiltonian, type="normal", **kwargs):
-        if type.lower() in ("cc", "ccsd"):
+        if isinstance(hamiltonian, HamiltonianPW):
+            return cls.create_ueg(hamiltonian, **kwargs)
+        elif type.lower() in ("cc", "ccsd"):
             return cls.create_ccsd(hamiltonian, **kwargs)
         else:
             return cls.create_normal(hamiltonian, **kwargs)
@@ -96,7 +99,7 @@ class Propagator(nn.Module):
             para_tsteps=_pd["tsteps"], 
             cplx_tsteps=_cd["tsteps"], 
             **init_kwargs)
-    
+
     @nn.nowrap
     @classmethod
     def create_ccsd(cls, 
@@ -143,11 +146,53 @@ class Propagator(nn.Module):
             sqrt_tsvpar=False,
             priori_mask=mask, 
             **init_kwargs)
+
+    @nn.nowrap
+    @classmethod
+    def create_ueg(cls, 
+            hamiltonian, 
+            init_tsteps, *, 
+            expm_option: Union[str, tuple] = (),
+            parametrize: Union[bool, str, Sequence[str]] = True,
+            use_complex: Union[bool, str, Sequence[str]] = False,
+            k_symmetric: Union[bool, str, Sequence[str]] = False,
+            init_random: float = 0.,
+            **init_kwargs):
+        # handle parameter options
+        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
+        _ifcplx = lambda t: _t_cplx if t else _t_real
+        _cd = parse_bool(("hmf", "vhs", "tsteps"), use_complex)
+        _sd = parse_bool(("hmf", "vhs"), k_symmetric)
+        # make one body operator
+        hmf_op = OneBodyPW(
+            hamiltonian.ke, 
+            hamiltonian.kmask,
+            parametrize=_pd["hmf"], 
+            k_symmetric=_sd["hmf"],
+            init_random=init_random,
+            dtype=_ifcplx(_cd["hmf"]),
+            expm_option=expm_option)
+        # make two body operator
+        vhs_op = AuxFieldPW(
+            hamiltonian.vq, 
+            hamiltonian.kmask,
+            hamiltonian.qmask,
+            parametrize=_pd["vhs"],
+            q_symmetric=_sd["vhs"],
+            init_random=init_random,
+            dtype=_ifcplx(_cd["vhs"]),
+            expm_option=expm_option)
+        # build propagator
+        return cls(hmf_op, vhs_op, 
+            init_tsteps=init_tsteps, 
+            para_tsteps=_pd["tsteps"], 
+            cplx_tsteps=_cd["tsteps"], 
+            **init_kwargs)
             
     @nn.nowrap
     def fields_shape(self):
         nts = len(self.init_tsteps)
-        nfield = self.vhs_op.init_vhs.shape[0]
+        nfield = self.vhs_op.nfield
         return onp.array((nts, nfield))
 
     def setup(self):
@@ -182,7 +227,7 @@ class Propagator(nn.Module):
                         for _ in range(self.nts_v)]
 
     def __call__(self, wfn, fields):
-        if _has_spin(wfn) and wfn[0].shape[0] < self.hmf_op.init_hmf.shape[-1]:
+        if _has_spin(wfn) and wfn[0].shape[0] < self.hmf_op.nbasis:
             wfn = _make_ghf(wfn)
         wfn, nelec = pack_spin(wfn)
         log_weight = 0. # + 0.5 * self.nts_v * self.nsite
