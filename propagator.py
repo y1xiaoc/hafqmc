@@ -163,10 +163,12 @@ class Propagator(nn.Module):
         _ifcplx = lambda t: _t_cplx if t else _t_real
         _cd = parse_bool(("hmf", "vhs", "tsteps"), use_complex)
         _sd = parse_bool(("hmf", "vhs"), k_symmetric)
+        # prepare data
+        hmf, vhs, kmask, qmask = hamiltonian.make_proj_op()
         # make one body operator
         hmf_op = OneBodyPW(
-            hamiltonian.ke, 
-            hamiltonian.kmask,
+            hmf, 
+            kmask,
             parametrize=_pd["hmf"], 
             k_symmetric=_sd["hmf"],
             init_random=init_random,
@@ -174,9 +176,9 @@ class Propagator(nn.Module):
             expm_option=expm_option)
         # make two body operator
         vhs_op = AuxFieldPW(
-            hamiltonian.vq, 
-            hamiltonian.kmask,
-            hamiltonian.qmask,
+            vhs, 
+            kmask,
+            qmask,
             parametrize=_pd["vhs"],
             q_symmetric=_sd["vhs"],
             init_random=init_random,

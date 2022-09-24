@@ -6,7 +6,7 @@ from typing import Optional, Sequence, Union
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, symmetrize, Serial, cmult
+from .utils import fix_init, symmetrize, Serial, cmult, scatter
 from .utils import warp_spin_expm, make_expm_apply
 from .hamiltonian import _align_rdm, calc_rdm
 
@@ -163,7 +163,7 @@ def meanfield_subtract(vhs, rdm, cutoff=None):
 # below are classes and functions for pw basis
 
 class OneBodyPW(nn.Module):
-    init_ke: jnp.array
+    init_hmf: jnp.array
     kmask: Optional[jnp.array] = None
     parametrize: bool = False
     k_symmetric: bool = False
@@ -173,25 +173,25 @@ class OneBodyPW(nn.Module):
 
     @property
     def nbasis(self):
-        return self.init_ke.shape[-1]
+        return self.init_hmf.shape[-1]
 
     def setup(self):
         if self.parametrize:
             if self.k_symmetric:
-                raw_ke, self.ke_invidx = jnp.unique(self.init_ke, return_inverse=True)
+                raw_hmf, self.kinvidx = jnp.unique(self.init_hmf, return_inverse=True)
             else:
-                raw_ke = self.init_ke
-            self.ke = self.param("ke", fix_init, 
-                raw_ke, self.dtype, self.init_random)
+                raw_hmf = self.init_hmf
+            self.hmf = self.param("hmf", fix_init, 
+                raw_hmf, self.dtype, self.init_random)
         else:
-            self.ke = self.init_ke
+            self.hmf = self.init_hmf
     
     def __call__(self, step):
-        ke = self.ke
+        hmf = self.hmf
         if self.parametrize and self.k_symmetric:
-            ke = ke[self.ke_invidx]
-        ke = cmult(step, ke)
-        return ke
+            hmf = hmf[self.kinvidx]
+        hmf = cmult(step, hmf)
+        return hmf
 
     @property
     def expm_apply(self):
@@ -202,7 +202,7 @@ class OneBodyPW(nn.Module):
 
 
 class AuxFieldPW(nn.Module):
-    init_vq: jnp.ndarray
+    init_vhs: jnp.ndarray
     kmask: jnp.ndarray
     qmask: jnp.ndarray
     parametrize: bool = False
@@ -217,45 +217,47 @@ class AuxFieldPW(nn.Module):
 
     @property
     def nfield(self):
-        return self.init_vq.shape[0] * 2
+        return self.init_vhs.shape[0] * 2
 
     def setup(self):
         if self.q_symmetric and self.parametrize:
-            raw_vq, self.vq_invidx = jnp.unique(self.init_ke, return_inverse=True)
+            raw_vhs, self.vinvidx = jnp.unique(self.init_vhs, return_inverse=True)
         else:
-            raw_vq = self.init_vq
-        raw_vhs = jnp.sqrt(1/2 * raw_vq)
+            raw_vhs = self.init_vhs
         vhs = jnp.tile(raw_vhs, (4, 1)) # for A and B; plus and minus Q
         if self.parametrize:
             self.vhs = self.param("vhs", fix_init, 
                 vhs, self.dtype, self.init_random)
         else:
             self.vhs = vhs
-        self.nq = self.init_vq.shape[0]
+        self.nq = self.init_vhs.shape[0]
         self.nhs = self.nq * 2
     
     def __call__(self, step, fields, curr_wfn=None):
         log_weight = - 0.5 * (fields ** 2).sum()
         vhs = self.vhs
         if self.q_symmetric and self.parametrize:
-            vhs = vhs[:, self.vq_invidx]
+            vhs = vhs[:, self.vinvidx]
         fields = fields.reshape(2, self.nq)
         vplus = jnp.array([1, 1j]) @ (fields * vhs[(0,2)])   # rho(Q) terms
         vminus = jnp.array([1, -1j]) @ (fields * vhs[(1,3)]) # rho(-Q) terms
         vsum = vplus + jnp.flip(vminus)
         vsum = cmult(step, vsum)
-        # remove pure multiplication at Q = 0
+        # remove constant multiplication at Q = 0
         vsum.at[self.nq//2].set(0)
         return vsum, log_weight
     
     @property
     def expm_apply(self):
         from jax.scipy.signal import convolve
+        from .utils import fftconvolve
         # sum over all Q for one electron
         def conv1ele(vhs, wfn):
-            vq_mesh = jnp.zeros_like(self.qmask, dtype=vhs.dtype).at[self.qmask].set(vhs)
-            wk_mesh = jnp.zeros_like(self.kmask, dtype=wfn.dtype).at[self.kmask].set(wfn)
+            dtype = vhs.real.dtype
+            vq_mesh = scatter(vhs, self.qmask)
+            wk_mesh = scatter(wfn, self.kmask)
             nwk_mesh = convolve(vq_mesh, wk_mesh, 'valid')
+            # nwk_mesh = fftconvolve(vq_mesh, wk_mesh, 'valid')
             return nwk_mesh[self.kmask]
         # map it for all electrons (at the last axis)
         matmul_fn = jax.vmap(conv1ele, in_axes=(None, -1), out_axes=-1)

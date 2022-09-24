@@ -50,6 +50,15 @@ def symrange(nmax, dtype=None):
     return jnp.arange(-nmax, nmax+1, dtype=dtype)
 
 
+def scatter(value, mask):
+    if value.dtype.kind == "c":
+        dtype = value.real.dtype
+        return (jnp.zeros_like(mask, dtype=dtype).at[mask].set(value.real) 
+                + 1j * jnp.zeros_like(mask, dtype=dtype).at[mask].set(value.imag))
+    else:
+        return jnp.zeros_like(mask, dtype=value.dtype).at[mask].set(value) 
+    
+
 @partial(jax.custom_jvp, nondiff_argnums=(1,))
 def chol_qr(x, shift=None):
     *_, m, n = x.shape

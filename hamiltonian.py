@@ -3,7 +3,7 @@ import numpy as onp
 from jax import numpy as jnp
 from jax import scipy as jsp
 
-from .utils import tree_map
+from .utils import tree_map, scatter
 from .molecule import integrals_from_scf, initwfn_from_scf
 from .molecule import initwfn_from_ghf, get_orth_ao, solve_ghf
 
@@ -353,7 +353,7 @@ class Hamiltonian:
 
 
 # below are methods for plane wave UEG calculations
-from .utils import symrange, rawcorr
+from .utils import symrange, rawcorr, fftconvolve
 
 
 def make_pw_basis(ecut, nmax=None):
@@ -389,7 +389,13 @@ def make_pw_rhf(ke, nelec):
 def mod_h1e(vol, kvec):
     vfac = 1. / (2 * vol)
     qmat = kvec - kvec[:, None]
-    return - vfac * make_vq(qmat).sum(-1)
+    return vfac * make_vq(qmat).sum(-1)
+
+
+def calc_v0_pw(vq, kmask, qmask):
+    vq_mesh = scatter(vq, qmask)
+    v0_mesh = rawcorr(vq_mesh, kmask, 'valid')
+    return v0_mesh[kmask]
 
 
 def calc_madelung(rs, nelec):
@@ -423,10 +429,11 @@ def calc_e2b_pw(vq, bra, theta, kmask, qmask):
     # can be viewed as matmul in basis axis
     def corr1ele(bi, tj):
         # assume bra is already conjugated
-        bi_mesh = jnp.zeros_like(kmask, dtype=bi.dtype).at[kmask].set(bi)
-        tj_mesh = jnp.zeros_like(kmask, dtype=tj.dtype).at[kmask].set(tj)
+        bi_mesh = scatter(bi, kmask)
+        tj_mesh = scatter(tj, kmask)
         # G_q = \sum_k bra_k * theta_{k-q}
-        gq_mesh = rawcorr(bi_mesh, tj_mesh, 'full')
+        # gq_mesh = rawcorr(bi_mesh, tj_mesh, 'full')
+        gq_mesh = fftconvolve(bi_mesh, jnp.flip(tj_mesh))
         gq = gq_mesh[qmask]
         return gq
     # like calculating `c` and `f` in LCAO cases 
@@ -470,6 +477,11 @@ class HamiltonianPW:
         bra, ket = _align_wfn(bra, ket)
         theta = calc_theta(bra, ket)
         return self.calc_e1b(bra, theta) + self.calc_e2b(bra, theta) + self.ecore
+
+    def make_proj_op(self):
+        hmf = self.ke - calc_v0_pw(self.vq, self.kmask, self.qmask)
+        vhs = jnp.sqrt(1/2 * self.vq)
+        return hmf, vhs, self.kmask, self.qmask
 
     def to_tuple(self):
         return (self.ke, self.vq, self.kmask, self.qmask, self.ecore, self.wfn0, self.aux)
