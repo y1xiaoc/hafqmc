@@ -270,9 +270,10 @@ class Hamiltonian:
     def calc_e2b_opt(self, bra, theta):
         return calc_e2b_opt(self.ceri, bra, theta)
 
-    calc_ovlp = staticmethod(calc_ovlp)
-    calc_slov = staticmethod(calc_slov)
-    calc_rdm  = staticmethod(calc_rdm)
+    calc_ovlp  = staticmethod(calc_ovlp)
+    calc_slov  = staticmethod(calc_slov)
+    calc_rdm   = staticmethod(calc_rdm)
+    calc_theta = staticmethod(calc_theta)
 
     def local_energy(self, bra=None, ket=None, optimize=True):
         """the normalized energy from two slater determinants"""
@@ -462,6 +463,7 @@ class HamiltonianPW:
     calc_ovlp = staticmethod(calc_ovlp)
     calc_slov = staticmethod(calc_slov)
     calc_rdm  = staticmethod(calc_rdm)
+    calc_theta = staticmethod(calc_theta)
 
     def calc_e1b(self, bra, theta):
         return calc_e1b_pw(self.ke, bra, theta)

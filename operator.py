@@ -234,17 +234,18 @@ class AuxFieldPW(nn.Module):
         self.nhs = self.nq * 2
     
     def __call__(self, step, fields, curr_wfn=None):
+        fields = fields.reshape(2, self.nq)
+        # fields = fields.at[:, self.nq//2].set(0)
         log_weight = - 0.5 * (fields ** 2).sum()
         vhs = self.vhs
         if self.q_symmetric and self.parametrize:
             vhs = vhs[:, self.vinvidx]
-        fields = fields.reshape(2, self.nq)
-        vplus = jnp.array([1, 1j]) @ (fields * vhs[(0,2)])   # rho(Q) terms
-        vminus = jnp.array([1, -1j]) @ (fields * vhs[(1,3)]) # rho(-Q) terms
+        vplus = jnp.array([1, 1j]) @ (fields * vhs[(0,2), :])   # rho(Q) terms
+        vminus = jnp.array([1, -1j]) @ (fields * vhs[(1,3), :]) # rho(-Q) terms
         vsum = vplus + jnp.flip(vminus)
         vsum = cmult(step, vsum)
         # remove constant multiplication at Q = 0
-        vsum.at[self.nq//2].set(0)
+        vsum = vsum.at[self.nq//2].set(0)
         return vsum, log_weight
     
     @property
