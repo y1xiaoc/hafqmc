@@ -268,21 +268,21 @@ def make_blackjax(logdens_fn, fields_shape, beta=1., kernel="nuts", **kwargs):
 
     def sample(key, params, state):
         logprob_fn = partial(ravel_logd, params)
-        kernel_fn = kmodule.kernel(logprob_fn, 
+        kernel = kmodule(logprob_fn, 
             inverse_mass_matrix=inv_mass, **kwargs)
-        state, info = kernel_fn(key, state)
+        state, info = kernel.step(key, state)
         return state, (unravel(state.position), -state.potential_energy)
 
     def init(key, params):
         sigma, mu = 1., 0.
         fields = jax.random.normal(key, (fsize,)) * sigma + mu
         logprob_fn = partial(ravel_logd, params)
-        return kmodule.new_state(fields, logprob_fn)
+        return kmodule.init(fields, logprob_fn)
 
     def refresh(state, params):
         fields = state.position
         logprob_fn = partial(ravel_logd, params)
-        return kmodule.new_state(fields, logprob_fn)
+        return kmodule.init(fields, logprob_fn)
 
     return MCSampler(sample, init, refresh)
 
