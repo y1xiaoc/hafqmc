@@ -9,7 +9,7 @@ from .ansatz import BraKet
 
 
 def exp_shifted(x, normalize=None):
-    stblz = paxis.all_max(x)
+    stblz = paxis.all_max(lax.stop_gradient(x))
     exp = jnp.exp(x - stblz)
     if normalize:
         assert normalize.lower() in ("sum", "mean"), "invalid normalize option"
