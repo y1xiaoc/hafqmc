@@ -1,6 +1,5 @@
-# NOTE this file contains script from pauxy repo
-# NOTE https://github.com/pauxy-qmc/pauxy/
-# NOTE DO NOT open source this repo before it is substituded
+# this file borrows script from pauxy repo
+# https://github.com/pauxy-qmc/pauxy/
 
 import time
 import h5py
