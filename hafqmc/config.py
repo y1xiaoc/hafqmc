@@ -114,7 +114,7 @@ def default() -> ConfigDict:
         },
         "log": {
             "stat_freq": 1,
-            "stat_path": "tbdata/",
+            "stat_path": "data.txt",
             "ckpt_freq": 100,
             "ckpt_path": "checkpoint.pkl",
             "hpar_path": "hparams.yml",

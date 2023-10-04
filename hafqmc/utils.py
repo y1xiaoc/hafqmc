@@ -10,6 +10,8 @@ from functools import partial, reduce
 import dataclasses
 import pickle
 import time
+import glob
+import os
 
 
 _t_real = jnp.float64
@@ -243,6 +245,20 @@ def ensure_mapping(obj, default_key="name"):
         return dict(**obj)
     except TypeError:
         return {default_key: obj}
+
+
+def backup_if_exist(filename, max_keep=None, prefix=""):
+    idx_ptn = f"0{len(str(max_keep))}d" if max_keep is not None else "d"
+    last_idx = max([0] + [int(ss.removeprefix(f"{filename}.{prefix}"))
+                          for ss in glob.glob(f"{filename}.{prefix}*")]) + 1
+    if max_keep is not None:
+        last_idx = min(last_idx, max_keep - 1)
+    fnames = [filename]
+    fnames += [f"{filename}.{prefix}{ii:{idx_ptn}}"
+               for ii in range(1, last_idx + 1)]
+    for ii, fn in reversed(list(enumerate(fnames[:-1]))):
+        if os.path.exists(fn):
+            os.replace(fn, fnames[ii+1])
 
 
 def save_pickle(filename, data):

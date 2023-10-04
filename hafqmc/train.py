@@ -2,10 +2,10 @@ import time
 import logging
 import jax 
 import optax
+import numpy as onp
 from jax import numpy as jnp
 from optax._src import alias as optax_alias
 from ml_collections import ConfigDict
-from tensorboardX import SummaryWriter
 from typing import NamedTuple
 
 from .molecule import build_mf
@@ -13,8 +13,8 @@ from .hamiltonian import Hamiltonian, HamiltonianPW
 from .ansatz import Ansatz, BraKet
 from .estimator import make_eval_total
 from .sampler import make_sampler, make_multistep, make_batched, SamplerUnion
-from .utils import ensure_mapping, save_pickle, load_pickle, Printer, cfg_to_yaml
-from .utils import make_moving_avg, PyTree, tree_map
+from .utils import save_pickle, load_pickle, Printer, cfg_to_yaml, backup_if_exist
+from .utils import ensure_mapping, make_moving_avg, PyTree, tree_map
 
 
 def lower_penalty(s, factor=1., target=1., power=2.):
@@ -103,7 +103,8 @@ def train(cfg: ConfigDict):
     logger = logging.getLogger("train")
     log_level = getattr(logging, cfg.log.level.upper())
     logger.setLevel(log_level)
-    writer = SummaryWriter(cfg.log.stat_path)
+    backup_if_exist(cfg.log.stat_path, prefix="bck")
+    writer = open(cfg.log.stat_path, "w", buffering=1)
     print_fields = {"step": "", "loss": ".4f", "e_tot": ".4f", 
                     "exp_es": ".4f", "exp_s": ".4f"}
     if cfg.loss.std_factor >= 0:
@@ -232,8 +233,10 @@ def train(cfg: ConfigDict):
             if sflag is not None: aux["nprop"] = sflag
             _lr = (lr_schedule(train_state.opt_state[-1][0].count) 
                 if callable(lr_schedule) else lr_schedule)
-            printer.print_fields({"step": ii, "loss": loss, **aux, "lr": _lr})
-            writer.add_scalars("stat", {"loss": loss, **aux, "lr": _lr}, global_step=ii)
+            stat_dict = {"step": ii, "loss": loss, **aux, "lr": _lr}
+            printer.print_fields(stat_dict)
+            onp.savetxt(writer, onp.array(list(stat_dict.values())).reshape(1,-1),
+                        header=" ".join(stat_dict.keys()) if ii == 0 else "")
         if ii % cfg.log.ckpt_freq == 0:
             save_pickle(cfg.log.ckpt_path, (key, tuple(train_state)))
     writer.close()
