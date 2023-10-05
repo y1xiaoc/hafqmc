@@ -43,11 +43,6 @@ def symmetrize(x):
     return (x + _H(x)) / 2
 
 
-def cmult(x1, x2):
-    return ((x1.real * x2.real - x1.imag * x2.imag) 
-        + 1j * (x1.imag * x2.real + x1.real * x2.imag))
-
-
 def symrange(nmax, dtype=None):
     return jnp.arange(-nmax, nmax+1, dtype=dtype)
 

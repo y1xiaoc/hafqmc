@@ -6,7 +6,7 @@ from typing import Optional, Sequence, Union
 from functools import partial
 
 from .utils import _t_real, _t_cplx
-from .utils import fix_init, symmetrize, Serial, cmult, scatter
+from .utils import fix_init, symmetrize, Serial, scatter
 from .utils import warp_spin_expm, make_expm_apply
 from .hamiltonian import _align_rdm, calc_rdm
 
@@ -32,7 +32,7 @@ class OneBody(nn.Module):
 
     def __call__(self, step):
         hmf = symmetrize(self.hmf) if self.hermite_out else self.hmf
-        hmf = cmult(step, hmf)
+        hmf = step * hmf
         return hmf
     
     @property
@@ -83,7 +83,7 @@ class AuxField(nn.Module):
             log_weight += - fields @ fshift - 0.5 * (fshift ** 2).sum()
             fields += fshift
         vhs_sum = jnp.tensordot(fields, vhs, axes=1)
-        vhs_sum = cmult(step, vhs_sum)
+        vhs_sum = step * vhs_sum
         return vhs_sum, log_weight
     
     @property
@@ -141,7 +141,7 @@ class AuxFieldNet(AuxField):
             log_weight += - nfields @ fshift - 0.5 * (fshift ** 2).sum()
             nfields += fshift
         vhs_sum = jnp.tensordot(nfields, vhs, axes=1)
-        vhs_sum = cmult(step, vhs_sum)
+        vhs_sum = step * vhs_sum
         return vhs_sum, log_weight
 
 
@@ -190,7 +190,7 @@ class OneBodyPW(nn.Module):
         hmf = self.hmf
         if self.parametrize and self.k_symmetric:
             hmf = hmf[self.kinvidx]
-        hmf = cmult(step, hmf)
+        hmf = step * hmf
         return hmf
 
     @property
@@ -243,7 +243,7 @@ class AuxFieldPW(nn.Module):
         vplus = jnp.array([1, 1j]) @ (fields * vhs[(0,2), :])   # rho(Q) terms
         vminus = jnp.array([1, -1j]) @ (fields * vhs[(1,3), :]) # rho(-Q) terms
         vsum = vplus + jnp.flip(vminus)
-        vsum = cmult(step, vsum)
+        vsum = step * vsum
         # remove constant multiplication at Q = 0
         vsum = vsum.at[self.nq//2].set(0)
         return vsum, log_weight
