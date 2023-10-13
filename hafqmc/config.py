@@ -28,9 +28,9 @@ def default_prop(with_net=False) -> ConfigDict:
     type_safe=False, convert_dict=True)
 
 
-def ccsd_prop() -> ConfigDict:
+def ccsd_prop(sep=False) -> ConfigDict:
     return ConfigDict({
-        "type": "ccsd",
+        "type": "ccsd" if not sep else "ccsd_sep",
         "with_mask": True,
         "ortho_intvl": 0,
         "expm_option": ["scan", 1, 1],

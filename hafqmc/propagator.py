@@ -35,6 +35,8 @@ class Propagator(nn.Module):
             return cls.create_ueg(hamiltonian, **kwargs)
         elif type.lower() in ("cc", "ccsd"):
             return cls.create_ccsd(hamiltonian, **kwargs)
+        elif type.lower() in ("cc_sep", "ccsd_sep"):
+            return cls.create_ccsd_sep(hamiltonian, **kwargs)
         else:
             return cls.create_normal(hamiltonian, **kwargs)
 
@@ -146,6 +148,80 @@ class Propagator(nn.Module):
             sqrt_tsvpar=False,
             priori_mask=mask, 
             **init_kwargs)
+    
+    @nn.nowrap
+    @classmethod
+    def create_ccsd_sep(cls, 
+            hamiltonian, *, 
+            with_mask: bool =True, 
+            expm_option: Union[str, tuple] = (),
+            parametrize: Union[bool, str, Sequence[str]] = True,
+            use_complex: Union[bool, str, Sequence[str]] = False,
+            init_random: float = 0.,
+            mf_subtract: bool = False, 
+            **init_kwargs):
+        # prepare data
+        init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
+        # init_zero = jnp.zeros_like(init_hmf)
+        init_vhs_r = init_vhs.real[abs(init_vhs.real).sum((-1, -2)) > 1e-10]
+        init_vhs_i = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-10]
+        expm_fast = ("loop", 1, 1)
+        if with_mask:
+            expm_option = expm_fast
+        else:
+            mask = None
+        mfwfn = hamiltonian.wfn0 if mf_subtract else None
+        # handle parameter options
+        _pd = parse_bool(("hmf", "vhs", "tsteps"), parametrize)
+        _ifcplx = lambda t: _t_cplx if t else _t_real
+        _cd = parse_bool(("hmf", "tsteps"), use_complex)
+        # make real part, one body is zero
+        hmf_op1 = OneBody(
+            init_hmf / 2, 
+            parametrize=_pd["hmf"], 
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_ifcplx(_cd["hmf"]),
+            expm_option=expm_option)
+        vhs_op1 = AuxField(
+            init_vhs_r,
+            trial_wfn=mfwfn,
+            parametrize=_pd["vhs"],
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_t_real,
+            expm_option=expm_option)
+        prop1 = cls(hmf_op1, vhs_op1, 
+            init_tsteps=[-1.], 
+            para_tsteps=_pd["tsteps"], 
+            cplx_tsteps=_cd["tsteps"], 
+            sqrt_tsvpar=False,
+            priori_mask=mask, 
+            **init_kwargs)
+        # make imag part, one body is hmf
+        hmf_op2 = OneBody(
+            init_hmf / 2, 
+            parametrize=_pd["hmf"], 
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_ifcplx(_cd["hmf"]),
+            expm_option=expm_option)
+        vhs_op2 = AuxField(
+            init_vhs_i,
+            trial_wfn=mfwfn,
+            parametrize=_pd["vhs"],
+            init_random=init_random,
+            hermite_out=False,
+            dtype=_t_real,
+            expm_option=expm_option)
+        prop2 = cls(hmf_op2, vhs_op2, 
+            init_tsteps=[1.], 
+            para_tsteps=_pd["tsteps"], 
+            cplx_tsteps=_cd["tsteps"], 
+            sqrt_tsvpar=False,
+            priori_mask=mask, 
+            **init_kwargs)
+        return (prop1, prop2)
 
     @nn.nowrap
     @classmethod

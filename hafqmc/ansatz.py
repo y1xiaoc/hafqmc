@@ -37,6 +37,8 @@ class Ansatz(nn.Module):
                 prop = (Propagator.create(hamiltonian, **popt) 
                         if popt is not None else ansatz_props[-1])
                 ansatz_props.append(prop)
+            ansatz_props = sum((list(p) if not isinstance(p, Propagator) 
+                                else [p] for p in ansatz_props), [])
         init_wfn = hamiltonian.wfn0 if not wfn_spinmix else _make_ghf(hamiltonian.wfn0)
         return cls(init_wfn, propagators=ansatz_props, **ansatz_kwargs)
 
