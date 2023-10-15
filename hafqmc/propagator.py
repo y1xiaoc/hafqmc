@@ -189,6 +189,7 @@ class Propagator(nn.Module):
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=False,
+            norm_limit=0.05,
             dtype=_t_real,
             expm_option=expm_option)
         prop1 = cls(hmf_op1, vhs_op1, 

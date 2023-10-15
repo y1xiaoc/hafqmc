@@ -48,6 +48,7 @@ class AuxField(nn.Module):
     parametrize: bool = False
     init_random: float = 0.
     hermite_out: bool = False
+    norm_limit: Optional[float] = None
     dtype: Optional[jnp.dtype] = None
     expm_option: Union[str, tuple] = ()
 
@@ -71,6 +72,9 @@ class AuxField(nn.Module):
 
     def __call__(self, step, fields, curr_wfn=None):
         vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
+        if self.norm_limit is not None:
+            vnorm = jnp.sqrt(jnp.sum(vhs ** 2, axis=(-2,-1), keepdims=True))
+            vhs = vhs * jnp.minimum(1., self.norm_limit / vnorm)
         log_weight = - 0.5 * (fields ** 2).sum()
         if self.trial_rdm is not None:
             vhs, vbar0 = meanfield_subtract(vhs, self.trial_rdm)
