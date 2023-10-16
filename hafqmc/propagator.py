@@ -117,7 +117,7 @@ class Propagator(nn.Module):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         if only_imagv2:
-            init_vhs = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-10]
+            init_vhs = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7][::-1]
         if with_mask:
             expm_option = ("loop", 1, 1)
         else:
@@ -167,8 +167,8 @@ class Propagator(nn.Module):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         # init_zero = jnp.zeros_like(init_hmf)
-        init_vhs_r = init_vhs.real[abs(init_vhs.real).sum((-1, -2)) > 1e-10]
-        init_vhs_i = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-10]
+        init_vhs_r = init_vhs.real[abs(init_vhs.real).sum((-1, -2)) > 1e-7]
+        init_vhs_i = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7][::-1]
         expm_fast = ("loop", 1, 1)
         if with_mask:
             expm_option = expm_fast
