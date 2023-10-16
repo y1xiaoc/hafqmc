@@ -112,9 +112,12 @@ class Propagator(nn.Module):
             use_complex: Union[bool, str, Sequence[str]] = False,
             init_random: float = 0.,
             mf_subtract: bool = False, 
+            only_imagv2: bool = False,
             **init_kwargs):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
+        if only_imagv2:
+            init_vhs = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-10]
         if with_mask:
             expm_option = ("loop", 1, 1)
         else:
@@ -142,7 +145,7 @@ class Propagator(nn.Module):
             dtype=_t_cplx,
             expm_option=expm_option)
         return cls(hmf_op, vhs_op, 
-            init_tsteps=[-1.], 
+            init_tsteps=[1. if only_imagv2 else -1.], 
             para_tsteps=_pd["tsteps"], 
             cplx_tsteps=_cd["tsteps"], 
             sqrt_tsvpar=False,
@@ -159,6 +162,7 @@ class Propagator(nn.Module):
             use_complex: Union[bool, str, Sequence[str]] = False,
             init_random: float = 0.,
             mf_subtract: bool = False, 
+            limit_realv: Optional[float] = None,
             **init_kwargs):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
@@ -189,7 +193,7 @@ class Propagator(nn.Module):
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=False,
-            norm_limit=0.05,
+            norm_limit=limit_realv,
             dtype=_t_real,
             expm_option=expm_option)
         prop1 = cls(hmf_op1, vhs_op1, 

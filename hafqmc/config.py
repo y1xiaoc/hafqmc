@@ -28,8 +28,8 @@ def default_prop(with_net=False) -> ConfigDict:
     type_safe=False, convert_dict=True)
 
 
-def ccsd_prop(sep=False) -> ConfigDict:
-    return ConfigDict({
+def ccsd_prop(sep=False, img=False) -> ConfigDict:
+    cfg = ConfigDict({
         "type": "ccsd" if not sep else "ccsd_sep",
         "with_mask": True,
         "ortho_intvl": 0,
@@ -40,8 +40,10 @@ def ccsd_prop(sep=False) -> ConfigDict:
         "use_complex": False,
         "mf_subtract": False,
         "dyn_mfshift": False,
-    }, 
-    type_safe=False, convert_dict=True)
+    }, type_safe=False, convert_dict=True)
+    if img and not sep:
+        cfg.only_imagv2 = True
+    return cfg
 
 
 def ueg_prop() -> ConfigDict:
