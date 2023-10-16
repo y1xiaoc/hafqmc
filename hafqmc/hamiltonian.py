@@ -333,7 +333,7 @@ class Hamiltonian:
     @classmethod
     def from_pyscf(cls, mol_or_mf,
                    chol_cut=1e-6, orth_ao=None, full_eri=False, 
-                   with_cc=False, with_ghf=False):
+                   with_cc=False, raw_cc=False, with_ghf=False):
         if not hasattr(mol_or_mf, "mo_coeff"):
             mf = mol_or_mf.HF().run()
         else:
@@ -342,8 +342,12 @@ class Hamiltonian:
         aux = {"orth_mat": orth_mat}
         if with_cc:
             assert orth_ao is None, "only support MO basis for CCSD amplitudes"
-            mcc = with_cc if hasattr(with_cc, "t1") else mf.CCSD().run()
-            aux.update(cc_t1=mcc.t1, cc_t2=mcc.t2)
+            if raw_cc:
+                t1, t2 = mf.CCSD().get_init_guess()
+            else:
+                mcc = with_cc if hasattr(with_cc, "t1") else mf.CCSD().run()
+                t1, t2 = mcc.t1, mcc.t2
+            aux.update(cc_t1=t1, cc_t2=t2)
         if with_ghf:
             mghf = with_ghf if hasattr(with_ghf, "mo_coeff") else solve_ghf(mf.mol)
             aux.update(ghf_wfn=initwfn_from_ghf(mghf, mf, orth_mat))
