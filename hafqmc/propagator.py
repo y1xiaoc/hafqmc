@@ -142,7 +142,7 @@ class Propagator(nn.Module):
             parametrize=_pd["vhs"],
             init_random=init_random,
             hermite_out=False,
-            dtype=_t_cplx,
+            dtype=_ifcplx(not only_imagv2),
             expm_option=expm_option)
         return cls(hmf_op, vhs_op, 
             init_tsteps=[1. if only_imagv2 else -1.], 
