@@ -117,7 +117,7 @@ class Propagator(nn.Module):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         if only_imagv2:
-            init_vhs = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7][::-1]
+            init_vhs = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7]
         if with_mask:
             expm_option = ("loop", 1, 1)
         else:
@@ -156,7 +156,8 @@ class Propagator(nn.Module):
     @classmethod
     def create_ccsd_sep(cls, 
             hamiltonian, *, 
-            with_mask: bool =True, 
+            with_mask: bool = True, 
+            fix_nhs: Optional[int] = None,
             expm_option: Union[str, tuple] = (),
             parametrize: Union[bool, str, Sequence[str]] = True,
             use_complex: Union[bool, str, Sequence[str]] = False,
@@ -167,11 +168,17 @@ class Propagator(nn.Module):
         # prepare data
         init_hmf, init_vhs, mask = hamiltonian.make_ccsd_op()
         # init_zero = jnp.zeros_like(init_hmf)
-        init_vhs_r = init_vhs.real[abs(init_vhs.real).sum((-1, -2)) > 1e-7]
-        init_vhs_i = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7][::-1]
-        expm_fast = ("loop", 1, 1)
+        init_vhs_r = init_vhs.real[abs(init_vhs.real).sum((-1, -2)) > 1e-7][::-1]
+        init_vhs_i = init_vhs.imag[abs(init_vhs.imag).sum((-1, -2)) > 1e-7]
+        if fix_nhs is not None:
+            init_vhs_r = init_vhs_r[:fix_nhs]
+            init_vhs_r = (jnp.zeros((fix_nhs, *init_vhs.shape[1:]), _t_real)
+                             .at[:init_vhs_r.shape[0]].set(init_vhs_r))
+            init_vhs_i = init_vhs_i[:fix_nhs]
+            init_vhs_i = (jnp.zeros((fix_nhs, *init_vhs.shape[1:]), _t_real)
+                             .at[:init_vhs_i.shape[0]].set(init_vhs_i))
         if with_mask:
-            expm_option = expm_fast
+            expm_option = ("loop", 1, 1)
         else:
             mask = None
         mfwfn = hamiltonian.wfn0 if mf_subtract else None

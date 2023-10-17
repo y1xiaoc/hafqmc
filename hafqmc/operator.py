@@ -73,7 +73,8 @@ class AuxField(nn.Module):
     def __call__(self, step, fields, curr_wfn=None):
         vhs = symmetrize(self.vhs) if self.hermite_out else self.vhs
         if self.norm_limit is not None:
-            vnorm = jnp.sqrt(jnp.sum(vhs ** 2, axis=(-2,-1), keepdims=True))
+            vnorm2 = jnp.sum(vhs ** 2, axis=(-2,-1), keepdims=True)
+            vnorm = jnp.sqrt(jnp.clip(vnorm2, a_min=1e-12))
             vhs = vhs * jnp.minimum(1., self.norm_limit / vnorm)
         log_weight = - 0.5 * (fields ** 2).sum()
         if self.trial_rdm is not None:
