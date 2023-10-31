@@ -9,7 +9,11 @@ from .ansatz import BraKet
 
 
 def exp_shifted(x, normalize=None):
-    stblz = paxis.all_max(lax.stop_gradient(x))
+    # TODO: this all_max is actually all_mean in training
+    # TODO: and the all_mean is important in stablizing the gradient
+    # TODO: it is effectively a centering of gradients
+    # TODO: fix this by making it explicit in eval_total
+    stblz = paxis.all_max(x) 
     exp = jnp.exp(x - stblz)
     if normalize:
         assert normalize.lower() in ("sum", "mean"), "invalid normalize option"
