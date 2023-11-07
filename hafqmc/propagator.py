@@ -322,9 +322,8 @@ class Propagator(nn.Module):
         wfn, nelec = pack_spin(wfn)
         log_weight = 0. # + 0.5 * self.nts_v * self.nsite
         # get prop times
-        _ts_h = -self.ts_h if self.cplx_tsteps else -abs(self.ts_h) # -t is here
-        _raw_ts_v = self.ts_v if self.cplx_tsteps else jnp.abs(self.ts_v)
-        _ts_v = 1j * _raw_ts_v if self.sqrt_tsvpar else jnp.sqrt(-_raw_ts_v+0j)
+        _ts_h = -self.ts_h # the negation of t goes to here
+        _ts_v = 1j * self.ts_v if self.sqrt_tsvpar else jnp.sqrt(-self.ts_v+0j)
         # step functions in iterative prop
         def app_h(wfn, ii):
             hop = self.hmf_ops[ii]
